@@ -2,6 +2,7 @@
 authors = ["Alex Sayers <alex.sayers@gmail.com>"]
 name = "tailsrv"
 version = "0.1.0"
+readme = "README.md"
 
 [dependencies]
 clap = "2.26.0"
