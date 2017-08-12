@@ -1,28 +1,28 @@
-use nom;
+use index::*;
 use std::path::*;
+use std::str;
 
 #[derive(Debug)]
 pub enum Header {
     List,
-    Stream{ path: PathBuf, offset: i64 },
+    Stream{ path: PathBuf, index: Index },
     Stats,
 }
 
-named!(pub header<&str,Header>, alt!(list_header | stream_header | stats_header));
-named!(list_header<&str,Header>, do_parse!(
+named!(pub header<Header>, alt!(list_header | stream_header | stats_header));
+named!(list_header<Header>, do_parse!(
     tag!("list") >>
     (Header::List)
 ));
-named!(stats_header<&str,Header>, do_parse!(
+named!(stats_header<Header>, do_parse!(
     tag!("stats") >>
     (Header::Stats)
 ));
-named!(stream_header<&str,Header>, do_parse!(
+named!(stream_header<Header>, do_parse!(
     tag!("stream ") >>
     path: path >>
-    tag!(" from byte ") >>
-    offset: natural >>
-    (Header::Stream{ path: path, offset: offset as i64 })
+    tag!(" from ") >>
+    index: index >>
+    (Header::Stream{ path: path, index: index })
 ));
-named!(natural<&str, usize>, flat_map!(recognize!(nom::digit), parse_to!(usize)));
-named!(path<&str, PathBuf>, map!(take_until!(" "), |x| PathBuf::from(x)));
+named!(path<PathBuf>, map!(take_until!(" "), |x| Path::new(str::from_utf8(x).unwrap()).to_owned()));

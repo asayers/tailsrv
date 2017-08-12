@@ -4,6 +4,8 @@ extern crate env_logger;
 extern crate ignore;
 extern crate inotify;
 #[macro_use] extern crate log;
+extern crate memchr;
+extern crate memmap;
 extern crate mio;
 extern crate nix;
 #[macro_use] extern crate nom;
@@ -21,6 +23,7 @@ use std::net::SocketAddr;
 
 mod file_list; pub use file_list::*;
 mod header;  pub use header::*;
+mod index;  pub use index::*;
 mod nursery; pub use nursery::*;
 mod pool; pub use pool::*;
 mod token_box; pub use token_box::*;
@@ -96,7 +99,7 @@ fn main() {
                                     writeln!(sock, "{}", entry.unwrap().path().display()).unwrap();
                                 }
                             }
-                            Some(Header::Stream{ path, offset }) => {
+                            Some(Header::Stream{ path, index }) => {
                                 if file_is_valid(&path) {
                                     // OK! This client will start watching a file.
                                     let sock = nursery.graduate(cid).unwrap();
@@ -105,7 +108,7 @@ fn main() {
                                         token,
                                         mio::Ready::writable() | mio::unix::UnixReady::hup(),
                                         mio::PollOpt::edge()).unwrap();
-                                    pool.register_client(cid, sock, &path, offset).unwrap();
+                                    pool.register_client(cid, sock, &path, index).unwrap();
                                 } else {
                                     error!("Client tried to access illegal file");
                                     let sock = nursery.graduate(cid).unwrap();

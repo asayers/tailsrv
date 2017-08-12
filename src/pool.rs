@@ -141,7 +141,7 @@ impl WatcherPool {
     }
 
     pub fn register_client(&mut self, cid: ClientId, sock: TcpStream, path: &Path,
-                           offset: Offset) -> Result<()> {
+                           index: Index) -> Result<()> {
         info!("Registering client {}", cid);
         let fid = self.inotify.add_watch(&path, watch_mask::MODIFY | watch_mask::DELETE_SELF).unwrap();
         match self.files.entry(fid) {
@@ -156,6 +156,7 @@ impl WatcherPool {
             }
         }
         let &(ref file, _) = self.files.get(&fid).unwrap();
+        let offset = resolve_index(file, index)?.unwrap();
         self.clients.insert(cid, (sock, fid, offset as i64));
         Ok(())
     }
