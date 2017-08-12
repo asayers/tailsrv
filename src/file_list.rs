@@ -1,16 +1,26 @@
 use ignore::{WalkBuilder,Walk};
 use same_file::*;
+use std::fmt::Write;
 use std::path::*;
+use types::*;
 
 pub fn file_is_valid(path: &Path) -> bool {
-    valid_files().any(|entry| {
-        is_same_file(entry.unwrap().path(), path).unwrap_or(false)
-    })
+    for entry in valid_files() {
+        match entry {
+            Err(e) => warn!("{}", e),
+            Ok(ref entry) => {
+                if entry.file_type().map(|x| x.is_file()).unwrap_or(false) &&
+                    is_same_file(path, entry.path()).unwrap_or(false) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
-// TODO: Regular files only
 // TODO: Sort
-pub fn valid_files() -> Walk {
+fn valid_files() -> Walk {
     WalkBuilder::new(".")
         .git_global(false)   // Parsing git-related files is surprising
         .git_ignore(false)   // behaviour in the context of tailsrv, so
@@ -19,9 +29,17 @@ pub fn valid_files() -> Walk {
         .hidden(true)   // and ignore dotfiles (so clients can't read the .ignore files)
         .parents(false) // Don't search the parent directory for .ignore files.
         .build()
-        // .filter(|e| {
-        //     e.unwrap_or_else(return false)
-        //         .file_type().unwrap_or_else(return false);
-        //         .is_file()
-        // })
+}
+
+pub fn list_files() -> Result<String> {
+    let mut buf = String::new();
+    for entry in valid_files() {
+        match entry {
+            Err(e) => warn!("{}", e),
+            Ok(ref entry) if entry.file_type().map(|x| x.is_file()).unwrap_or(false) =>
+                writeln!(buf, "{}", entry.path().display())?,
+            _ => {}
+        }
+    }
+    Ok(buf)
 }

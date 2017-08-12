@@ -16,7 +16,6 @@ use env_logger::LogBuilder;
 use inotify::*;
 use log::LogLevelFilter;
 use mio::net::*;
-use mio::unix::*;
 use std::env::*;
 use std::io::prelude::*;
 use std::net::SocketAddr;
@@ -94,9 +93,7 @@ fn main() {
                             Some(Header::List) => {
                                 let mut sock = nursery.graduate(cid).unwrap();
                                 poll.deregister(&sock).unwrap();
-                                for entry in valid_files() {
-                                    writeln!(sock, "{}", entry.unwrap().path().display()).unwrap();
-                                }
+                                sock.write(list_files().unwrap().as_bytes()).unwrap();
                             }
                             Some(Header::Stream{ path, index }) => {
                                 if file_is_valid(&path) {

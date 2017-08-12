@@ -5,6 +5,7 @@ use nom;
 use std::collections::hash_map::*;
 use std::collections::hash_set::*;
 use std::io;
+use std::fmt;
 
 pub type Map<K,V> = HashMap<K, V, RandomState>;
 pub type Set<K> = HashSet<K, RandomState>;
@@ -18,6 +19,7 @@ error_chain! {
         Nix(nix::Error);
         Nom(nom::ErrorKind);
         Ignore(ignore::Error);
+        Fmt(fmt::Error);
     }
     errors {
         NoonesInterested
