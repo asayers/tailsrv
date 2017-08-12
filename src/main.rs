@@ -21,8 +21,8 @@ use std::net::SocketAddr;
 
 mod file_list; pub use file_list::*;
 mod header;  pub use header::*;
-mod librarian; pub use librarian::*;
 mod nursery; pub use nursery::*;
+mod pool; pub use pool::*;
 mod token_box; pub use token_box::*;
 mod types; pub use types::*;
 
@@ -46,7 +46,7 @@ fn main() {
     let poll = mio::Poll::new().unwrap();
 
     // Init inotify and register with epoll
-    let mut inotify = Inotify::init().unwrap();
+    let inotify = Inotify::init().unwrap();
     poll.register(&inotify, to_token(TypedToken::Inotify), mio::Ready::readable(), mio::PollOpt::level()).unwrap();
 
     // Bind the listen socket and register with epoll
@@ -58,9 +58,9 @@ fn main() {
 
     // Init the server state, allocate some buffers
     let mut mio_events = mio::Events::with_capacity(1024);
-    let mut inotify_buf = [0u8; 4096];
-    let mut nursery = Nursery::new(&poll);
-    let mut librarian = Librarian::new();
+    let mut nursery = Nursery::new();
+    let mut pool = WatcherPool::new(inotify);
+    let mut next_cid = 0;
 
     // Enter runloop
     info!("Serving files from {:?} on {}", current_dir().unwrap(), listen_addr);
@@ -71,65 +71,72 @@ fn main() {
                 TypedToken::Listener => {
                     // The listen socket is readable => a new client is trying to connect
                     let (sock, _) = listener.accept().unwrap();
-                    nursery.register(sock).unwrap();
+                    let cid = next_cid;
+                    next_cid += 1;
+                    poll.register(&sock,
+                        to_token(TypedToken::NurseryToken(cid)),
+                        mio::Ready::readable() | mio::unix::UnixReady::hup(),
+                        mio::PollOpt::edge()).unwrap();
+                    nursery.register(cid, sock).unwrap();
                 }
                 TypedToken::Inotify => {
                     // The inotify FD is readable => a watched file has been modified
-                    let inotify_events = inotify.read_events_blocking(&mut inotify_buf).unwrap();
-                    for ev in inotify_events {
-                        if ev.mask.contains(event_mask::MODIFY) {
-                            librarian.file_modified(ev.wd).unwrap();
-                            librarian.handle_all_dirty().unwrap();
-                        } else if ev.mask.contains(event_mask::DELETE_SELF) {
-                            librarian.deregister_file(ev.wd).unwrap();
-                        }
-                    }
+                    pool.check_watches().unwrap();
+                    pool.handle_all_dirty().unwrap();
                 }
                 TypedToken::NurseryToken(cid) => {
-                    if UnixReady::from(mio_event.readiness()).is_hup() {
-                        // A client socket has disconnected => remove
-                        nursery.deregister(cid).unwrap();
-                    }
                     if mio_event.readiness().is_readable() {
                         // A nursery client has sent some data. Try to parse it as a header!
                         match nursery.try_read_header(cid).unwrap() {
                             None => { /* do nothing */ }
                             Some(Header::List) => {
-                                let mut sock = nursery.deregister(cid).unwrap();
+                                let mut sock = nursery.graduate(cid).unwrap();
+                                poll.deregister(&sock).unwrap();
                                 for entry in valid_files() {
                                     writeln!(sock, "{}", entry.unwrap().path().display()).unwrap();
                                 }
                             }
                             Some(Header::Stream{ path, offset }) => {
                                 if file_is_valid(&path) {
+                                    // OK! This client will start watching a file.
                                     let sock = nursery.graduate(cid).unwrap();
-                                    let fid = inotify.add_watch(&path,
-                                        watch_mask::MODIFY | watch_mask::DELETE_SELF).unwrap();
-                                    librarian.register_client(cid, sock, fid, &path, offset).unwrap();
+                                    let token = to_token(TypedToken::LibraryToken(cid));
+                                    poll.reregister(&sock,
+                                        token,
+                                        mio::Ready::writable() | mio::unix::UnixReady::hup(),
+                                        mio::PollOpt::edge()).unwrap();
+                                    pool.register_client(cid, sock, &path, offset).unwrap();
                                 } else {
                                     error!("Client tried to access illegal file");
-                                    nursery.deregister(cid).unwrap();
+                                    let sock = nursery.graduate(cid).unwrap();
+                                    poll.deregister(&sock).unwrap();
                                 }
                             }
                             Some(Header::Stats) => {
-                                let mut sock = nursery.deregister(cid).unwrap();
+                                let mut sock = nursery.graduate(cid).unwrap();
+                                poll.deregister(&sock).unwrap();
                                 if sock.peer_addr().unwrap().ip().is_loopback() {
-                                    writeln!(sock, "{:?}\n{:?}", nursery, librarian).unwrap();
+                                    writeln!(sock, "{:?}\n{:?}", nursery, pool).unwrap();
                                 }
                             }
                         }
                     }
+                    // if UnixReady::from(mio_event.readiness()).is_hup() {
+                    //     // A client socket has disconnected => remove
+                    //     let sock = nursery.deregister(cid).unwrap();
+                    //     poll.deregister(&sock).unwrap();
+                    // }
                 }
                 TypedToken::LibraryToken(cid) => {
-                    if UnixReady::from(mio_event.readiness()).is_hup() {
-                        // A client socket has disconnected => remove
-                        librarian.deregister_client(cid).unwrap();
-                    }
                     if mio_event.readiness().is_writable() {
                         // A client socket has become writable => send some data
-                        librarian.client_writable(cid).unwrap();
-                        librarian.handle_all_dirty().unwrap();
+                        pool.client_writable(cid).unwrap();
+                        pool.handle_all_dirty().unwrap();
                     }
+                    // if UnixReady::from(mio_event.readiness()).is_hup() {
+                    //     // A client socket has disconnected => remove
+                    //     pool.deregister_client(cid).unwrap();
+                    // }
                 }
             }
         }
