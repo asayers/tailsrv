@@ -32,8 +32,7 @@ mod types; pub use types::*;
 fn main() {
     // Define CLI options
     let args = App::new("tailsrv")
-        .version("1.0")
-        .author("Alex Sayers <alex.sayers@gmail.com>")
+        .version("0.2")
         .about("A server which allows clients to tail files in the working directory")
         .args_from_usage(
             "-p --port=<port> 'The port number on which to listen for new connections'
