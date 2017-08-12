@@ -24,7 +24,7 @@ named!(list_header<&str,Header>, do_parse!(
 named!(stream_header<&str,Header>, do_parse!(
     tag!("stream ") >>
     path: path >>
-    tag!(" ") >>
+    tag!(" from byte ") >>
     offset: natural >>
     (Header::Stream{ path: path, offset: offset as i64 })
 ));
