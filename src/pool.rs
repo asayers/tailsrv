@@ -158,6 +158,7 @@ impl WatcherPool {
     pub fn deregister_client(&mut self, cid: ClientId) -> Result<()> {
         info!("Deregistering client {}", cid);
         let (_, fid, _) = self.clients.remove(&cid).ok_or(ErrorKind::ClientNotFound)?;
+        vecdeque_remove(&mut self.dirty_clients, cid);
         let noones_interested = {
             let (_, ref mut watchers) = *self.files.get_mut(&fid).ok_or(ErrorKind::FileNotWatched)?;
             watchers.remove(&cid);
@@ -178,6 +179,21 @@ impl WatcherPool {
         }
         self.inotify.rm_watch(fid)?;
         Ok(())
+    }
+}
+
+/// Removes all occurances of `target` from `xs`.
+// TODO: Unit tests
+fn vecdeque_remove<T: PartialEq>(xs: &mut VecDeque<T>, target: T) {
+    let mut end = xs.len();
+    let mut i = 0;
+    while i < end {
+        if xs[i] == target {
+            xs.remove(i);
+            end -= 1;
+        } else {
+            i += 1;
+        }
     }
 }
 
