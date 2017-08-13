@@ -7,7 +7,7 @@ pub enum TypedToken {
     Listener,
     Inotify,
     NurseryToken(ClientId),
-    LibraryToken(ClientId),
+    PoolToken(ClientId),
 }
 
 const CATEGORIES: usize = 2;
@@ -21,7 +21,7 @@ pub fn from_token(token: mio::Token) -> TypedToken {
     } else if x % CATEGORIES == 0 {
         TypedToken::NurseryToken(x / CATEGORIES)
     } else {
-        TypedToken::LibraryToken((x - 1) / CATEGORIES)
+        TypedToken::PoolToken((x - 1) / CATEGORIES)
     };
     debug!("{:?} => {:?}", token, tt);
     tt
@@ -32,7 +32,7 @@ pub fn to_token(tt: TypedToken) -> mio::Token {
         TypedToken::Listener => usize::MAX - 1,
         TypedToken::Inotify => usize::MAX - 2,
         TypedToken::NurseryToken(x) => x * CATEGORIES,
-        TypedToken::LibraryToken(x) => x * CATEGORIES + 1,
+        TypedToken::PoolToken(x) => x * CATEGORIES + 1,
     });
     debug!("{:?} => {:?}", tt, token);
     token

@@ -95,13 +95,6 @@ fn main() {
                         mio::PollOpt::edge()).unwrap();
                     nursery.insert(cid, BufReader::new(sock));    // ...and store it in the nursery
                 }
-                TypedToken::Inotify => {
-                    // The inotify FD is readable => a watched file has been modified
-                    // First, mark all clients interested in modifed files as dirty.
-                    pool.check_watches().unwrap();
-                    // Then send data until they're up-do-date.
-                    pool.handle_all_dirty().unwrap();
-                }
                 TypedToken::NurseryToken(cid) => {
                     if mio_event.readiness().is_readable() {
                         // A client whih is in the nursery has sent some data. Let's try to read it
@@ -134,7 +127,7 @@ fn main() {
                                             .ok_or(ErrorKind::ClientNotFound).unwrap()
                                             .into_inner();
                                         poll.reregister(&sock,
-                                            to_token(TypedToken::LibraryToken(cid)), // with a pool token
+                                            to_token(TypedToken::PoolToken(cid)), // with a pool token
                                             mio::Ready::writable(), // Watching for writability
                                             mio::PollOpt::edge()).unwrap();
                                         // And then we put it in the pool. This function also
@@ -163,7 +156,14 @@ fn main() {
                         }
                     }
                 }
-                TypedToken::LibraryToken(cid) => {
+                TypedToken::Inotify => {
+                    // The inotify FD is readable => a watched file has been modified
+                    // First, mark all clients interested in modifed files as dirty.
+                    pool.check_watches().unwrap();
+                    // Then send data until they're up-do-date.
+                    pool.handle_all_dirty().unwrap();
+                }
+                TypedToken::PoolToken(cid) => {
                     if mio_event.readiness().is_writable() {
                         // A client in the pool has become writable => send some data
                         pool.client_writable(cid).unwrap();
@@ -176,6 +176,10 @@ fn main() {
 }
 
 /// Try to read a header from cid's socket
+//
+// FIXME: Clients can attack the server by sending lots of header data with no newline. Eventually
+// tailsrv will run out of memory and crash. TODO: length limit.
+// TODO: Perhaps we should also impose a time limit for sending a header.
 fn try_read_header(rdr: &mut BufReader<TcpStream>) -> Result<Option<Header>> {
     match rdr.fill_buf() {
         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
