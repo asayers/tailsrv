@@ -4,6 +4,18 @@ use std::fmt::Write;
 use std::path::*;
 use types::*;
 
+// TODO: Sort
+fn valid_files() -> Walk {
+    WalkBuilder::new(".")
+        .git_global(false)   // Parsing git-related files is surprising
+        .git_ignore(false)   // behaviour in the context of tailsrv, so
+        .git_exclude(false)  // let's not read those files.
+        .ignore(true)   // However, we *should* read generic ".ignore" files...
+        .hidden(true)   // and ignore dotfiles (so clients can't read the .ignore files)
+        .parents(false) // Don't search the parent directory for .ignore files.
+        .build()
+}
+
 pub fn file_is_valid(path: &Path) -> bool {
     for entry in valid_files() {
         match entry {
@@ -17,18 +29,6 @@ pub fn file_is_valid(path: &Path) -> bool {
         }
     }
     false
-}
-
-// TODO: Sort
-fn valid_files() -> Walk {
-    WalkBuilder::new(".")
-        .git_global(false)   // Parsing git-related files is surprising
-        .git_ignore(false)   // behaviour in the context of tailsrv, so
-        .git_exclude(false)  // let's not read those files.
-        .ignore(true)   // However, we *should* read generic ".ignore" files...
-        .hidden(true)   // and ignore dotfiles (so clients can't read the .ignore files)
-        .parents(false) // Don't search the parent directory for .ignore files.
-        .build()
 }
 
 pub fn list_files() -> Result<String> {

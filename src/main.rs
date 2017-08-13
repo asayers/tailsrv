@@ -108,9 +108,6 @@ fn main() {
                         // nothing.
                         if let Some(header) = header {
                             info!("Client {} sent header {:?}", cid, header);
-                            // FIXME: Some of the computations we do at this point may be expensive,
-                            // and block the whole server. It may be a good idea to set a timeout here,
-                            // somehow.
                             match header {
                                 Header::List => {
                                     let mut sock = nursery.remove(&cid)
@@ -120,6 +117,8 @@ fn main() {
                                     sock.write(list_files().unwrap().as_bytes()).unwrap();
                                 }
                                 Header::Stream{ path, index } => {
+                                    // FIXME: File validation could be expensive! It blocks
+                                    // tailsrv.
                                     if file_is_valid(&path) {
                                         // OK! This client will start watching a file. Let's remove
                                         // it from the nursery and change its epoll parameters.
@@ -132,6 +131,8 @@ fn main() {
                                             mio::PollOpt::edge()).unwrap();
                                         // And then we put it in the pool. This function also
                                         // handles setting up inotify watches etc.
+                                        // FIXME: Index resolution could be expensive! It blocks
+                                        // tailsrv.
                                         pool.register_client(cid, sock, &path, index).unwrap();
                                     } else {
                                         warn!("Client {} tried to access {:?} but isn't allowed", cid, path);
@@ -185,7 +186,7 @@ fn try_read_header(rdr: &mut BufReader<TcpStream>) -> Result<Option<Header>> {
         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
         Err(e) => bail!(e),
         Ok(buf) => {
-            info!("Current buffer: {:?}", buf);
+            debug!("Current buffer: {:?}", buf);
             match header(buf) {
                 nom::IResult::Done(_, x) => Ok(Some(x)), // Leave the data in the buffer, it's fine
                 nom::IResult::Error(e) => bail!(e),

@@ -147,6 +147,7 @@ impl WatcherPool {
             }
         }
         let &(ref file, _) = self.files.get(&fid).unwrap();
+        // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
         let offset = resolve_index(file, index)?.unwrap();
         self.clients.insert(cid, (sock, fid, offset as i64));
         Ok(())
@@ -155,7 +156,7 @@ impl WatcherPool {
     /// HUPs the sock, dereg's the file if empty.
     // FIXME: I guess we should remove epoll watch (although once the socket HUPs, it probably gets
     // removed automatically, right?)
-    pub fn deregister_client(&mut self, cid: ClientId) -> Result<()> {
+    fn deregister_client(&mut self, cid: ClientId) -> Result<()> {
         info!("Deregistering client {}", cid);
         let (_, fid, _) = self.clients.remove(&cid).ok_or(ErrorKind::ClientNotFound)?;
         vecdeque_remove(&mut self.dirty_clients, cid);
@@ -171,7 +172,7 @@ impl WatcherPool {
     }
 
     /// Closes the file, dereg's all clients.
-    pub fn deregister_file(&mut self, fid: FileId) -> Result<()> {
+    fn deregister_file(&mut self, fid: FileId) -> Result<()> {
         info!("Deregistering file {:?}", fid);
         let (_, watchers) = self.files.remove(&fid).ok_or(ErrorKind::FileNotWatched)?;
         for cid in watchers {

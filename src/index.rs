@@ -13,6 +13,7 @@ pub enum Index {
     End,
 }
 
+// TODO: Unit tests
 named!(pub index<Index>, alt!( byte_idx | line_idx | start_idx | end_idx ));
 named!(byte_idx<Index>, do_parse!(
     tag!("byte ") >>
@@ -34,6 +35,9 @@ named!(end_idx<Index>, do_parse!(
 ));
 named!(natural<usize>, flat_map!(recognize!(nom::digit), parse_to!(usize)));
 
+/// Resolves an index to a byte offset. `None` means that the index refers to a position beyond the
+/// end of the file and we don't have enough information to resolve it yet.
+// TODO: Unit tests
 pub fn resolve_index(file: &File, idx: Index) -> Result<Option<usize>> {
     Ok(match idx {
         Index::Byte(x) if x >= 0 => Some(x as usize),

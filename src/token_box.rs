@@ -12,6 +12,7 @@ pub enum TypedToken {
 
 const CATEGORIES: usize = 2;
 
+// TODO: Unit tests
 pub fn from_token(token: mio::Token) -> TypedToken {
     let mio::Token(x) = token;
     let tt = if x == usize::MAX - 1 {
@@ -27,6 +28,7 @@ pub fn from_token(token: mio::Token) -> TypedToken {
     tt
 }
 
+// TODO: Unit tests
 pub fn to_token(tt: TypedToken) -> mio::Token {
     let token = mio::Token(match tt {
         TypedToken::Listener => usize::MAX - 1,

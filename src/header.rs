@@ -9,6 +9,7 @@ pub enum Header {
     Stats,
 }
 
+// TODO: Unit tests
 named!(pub header<Header>, alt!(list_header | stream_header | stats_header));
 named!(list_header<Header>, do_parse!(
     tag!("list") >>
