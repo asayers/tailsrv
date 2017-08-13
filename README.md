@@ -34,9 +34,9 @@ for line in BufReader::new(sock).lines() {
 }
 ```
 
-tailsrv is a relatively simple single-threaded program. Client connections are
-monitored with epoll. Files are monitored with inotify. When a file changes or
-a connection becomes writable, we `sendfile()` the new data.
+tailsrv is a relatively simple program. Client connections are monitored with
+epoll. Files are monitored with inotify. When a file changes or a connection
+becomes writable, we `sendfile()` the new data.
 
 ## Usage
 
@@ -105,7 +105,7 @@ don't have any performance cost.
 
 We use epoll to track whether clients are writable. This means that a slow
 client can recieve data at its own pace, but it won't block other clients (even
-though tailsrv uses only a single thread).
+though tailsrv uses only a single thread for sending data).
 
 The use of sendfile means that *all data* is sent by the kernel directly from
 the pagecache to the network card. No data is ever copied into userspace. This

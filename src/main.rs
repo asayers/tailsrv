@@ -20,6 +20,7 @@ use std::env::*;
 use std::io::prelude::*;
 use std::io::{self, BufReader, BufRead};
 use std::net::SocketAddr;
+use std::thread;
 
 mod file_list; pub use file_list::*;
 mod header;  pub use header::*;
@@ -114,7 +115,8 @@ fn main() {
                                         .ok_or(ErrorKind::ClientNotFound).unwrap()
                                         .into_inner();
                                     poll.deregister(&sock).unwrap();
-                                    sock.write(list_files().unwrap().as_bytes()).unwrap();
+                                    // Listing files could be expensive, let's do it in a new thread.
+                                    thread::spawn(move || sock.write(list_files().unwrap().as_bytes()).unwrap() );
                                 }
                                 Header::Stream{ path, index } => {
                                     // FIXME: File validation could be expensive! It blocks
