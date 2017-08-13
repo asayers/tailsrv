@@ -37,7 +37,7 @@ impl Debug for WatcherPool {
 ///
 /// A bigger size increases total throughput, but may allow a client who is reading a lot of data
 /// to hurt reaction latency for other clients.
-pub const CHUNK_SIZE: i64 = 1024 * 1024;
+pub const CHUNK_SIZE: usize = 1024 * 1024;
 
 impl WatcherPool {
     pub fn new(inotify: Inotify) -> WatcherPool {
@@ -64,38 +64,37 @@ impl WatcherPool {
             None => return Ok(None),
             Some(x) => x,
         };
-        self.handle_client(cid)
+        let ret = self.handle_client(cid);
+        match ret {
+            Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::EPIPE)),_)) => {
+                // The client hung up
+                self.deregister_client(cid)?;
+                Ok(Some(0))
+            }
+            Err(e) => bail!(e),
+            Ok(n) => {
+                if n >= CHUNK_SIZE {
+                    // We're (probably) not done yet.
+                    self.dirty_clients.push_back(cid);
+                }
+                Ok(Some(n))
+            }
+        }
     }
 
     /// Send data to the given client, sending up to `CHUNK_SIZE` bytes from the file it's
     /// interested in.
     ///
-    /// If there is more than `CHUNK_SIZE` waiting to be sent to the client, it will be re-marked
-    /// as dirty.
-    fn handle_client(&mut self, cid: ClientId) -> Result<Option<usize>> {
-        let ret = {
-            let (ref mut sock, fid, ref mut offset) = *self.clients.get_mut(&cid)
-                .ok_or(ErrorKind::ClientNotFound)?;
-            let (ref mut file, _) = *self.files.get_mut(&fid)
-                .ok_or(ErrorKind::FileNotWatched)?;
-            let len = file.metadata()?.len();
-            let cnt = match len as i64 - *offset {
-                x if x <= 0 => return Ok(Some(0)),
-                x if x <= CHUNK_SIZE => x,
-                _ => { self.dirty_clients.push_back(cid); CHUNK_SIZE }
-            };
-            info!("Sending data (client={}, file={:?}, offset={}, cnt={})", cid, fid, offset, cnt);
-            sendfile(sock.as_raw_fd(), file.as_raw_fd(), Some(offset), cnt as usize)
-        };
-        match ret {
-            Err(nix::Error::Sys(nix::Errno::EPIPE)) => {
-                // The client hung up
-                self.deregister_client(cid)?;
-                Ok(None)
-            }
-            Err(e) => bail!(e),
-            Ok(n) => Ok(Some(n)),
-        }
+    /// If the client is up-to-date, the function will return with 0.
+    /// If the client is unwritable, the function will return with 0.
+    /// If the client has disconnected, the function will return with EPIPE.
+    /// If the client is writeable and needed more than `CHUNK_SIZE`, the function will return
+    fn handle_client(&mut self, cid: ClientId) -> Result<usize> {
+        let (ref mut sock, fid, ref mut offset) = *self.clients.get_mut(&cid)
+            .ok_or(ErrorKind::ClientNotFound)?;
+        let (ref mut file, _) = *self.files.get_mut(&fid)
+            .ok_or(ErrorKind::FileNotWatched)?;
+        update_client(file, sock, offset)
     }
 
     /// Check the inotify fd and mark appropriate clients as dirty
@@ -161,7 +160,9 @@ impl WatcherPool {
         Ok(())
     }
 
-    /// HUPs the sock, dereg's the file if empty. Remember to remove the watch.
+    /// HUPs the sock, dereg's the file if empty.
+    // FIXME: I guess we should remove epoll watch (although once the socket HUPs, it probably gets
+    // removed automatically, right?)
     pub fn deregister_client(&mut self, cid: ClientId) -> Result<()> {
         info!("Deregistering client {}", cid);
         let (_, fid, _) = self.clients.remove(&cid).ok_or(ErrorKind::ClientNotFound)?;
@@ -176,7 +177,7 @@ impl WatcherPool {
         Ok(())
     }
 
-    /// Closes the file, dereg's all clients. Remember to remove the watch.
+    /// Closes the file, dereg's all clients.
     pub fn deregister_file(&mut self, fid: FileId) -> Result<()> {
         info!("Deregistering file {:?}", fid);
         let (_, watchers) = self.files.remove(&fid).ok_or(ErrorKind::FileNotWatched)?;
@@ -185,5 +186,21 @@ impl WatcherPool {
         }
         self.inotify.rm_watch(fid)?;
         Ok(())
+    }
+}
+
+
+fn update_client(file: &mut File, sock: &mut TcpStream, offset: &mut Offset) -> Result<usize> {
+    let len = file.metadata()?.len();
+    let cnt = match len as i64 - *offset {
+        x if x <= 0 => return Ok(0),
+        x if x <= CHUNK_SIZE as i64=> x,
+        _ => CHUNK_SIZE as i64,
+    };
+    info!("Sending {} bytes from offset {}", cnt, offset);
+    match sendfile(sock.as_raw_fd(), file.as_raw_fd(), Some(offset), cnt as usize) {
+        Err(nix::Error::Sys(nix::Errno::EAGAIN)) => Ok(0),
+        Err(e) => bail!(e),
+        Ok(n) => Ok(n),
     }
 }
