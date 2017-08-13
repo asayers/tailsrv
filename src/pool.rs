@@ -50,26 +50,33 @@ impl WatcherPool {
         }
     }
 
+    /// Send data to all dirty clients until they're up-do-date, become unwritable, or hang up.
     pub fn handle_all_dirty(&mut self) -> Result<()> {
         loop {
-            if self.handle_next_dirty()?.is_none() {
-                break;
-            }
+            let cid = match self.dirty_clients.pop_front() {
+                None => break,
+                Some(x) => x,
+            };
+            self.handle_client(cid)?;
         }
         Ok(())
     }
 
-    pub fn handle_next_dirty(&mut self) -> Result<Option<usize>> {
-        let cid = match self.dirty_clients.pop_front() {
-            None => return Ok(None),
-            Some(x) => x,
+    /// Send data to the given client, sending up to `CHUNK_SIZE` bytes from the file it's
+    /// interested in.
+    fn handle_client(&mut self, cid: ClientId) -> Result<usize> {
+        let ret = {
+            let (ref mut sock, fid, ref mut offset) = *self.clients.get_mut(&cid)
+                .ok_or(ErrorKind::ClientNotFound)?;
+            let (ref mut file, _) = *self.files.get_mut(&fid)
+                .ok_or(ErrorKind::FileNotWatched)?;
+            update_client(file, sock, offset)
         };
-        let ret = self.handle_client(cid);
         match ret {
             Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::EPIPE)),_)) => {
                 // The client hung up
                 self.deregister_client(cid)?;
-                Ok(Some(0))
+                Ok(0)
             }
             Err(e) => bail!(e),
             Ok(n) => {
@@ -77,24 +84,9 @@ impl WatcherPool {
                     // We're (probably) not done yet.
                     self.dirty_clients.push_back(cid);
                 }
-                Ok(Some(n))
+                Ok(n)
             }
         }
-    }
-
-    /// Send data to the given client, sending up to `CHUNK_SIZE` bytes from the file it's
-    /// interested in.
-    ///
-    /// If the client is up-to-date, the function will return with 0.
-    /// If the client is unwritable, the function will return with 0.
-    /// If the client has disconnected, the function will return with EPIPE.
-    /// If the client is writeable and needed more than `CHUNK_SIZE`, the function will return
-    fn handle_client(&mut self, cid: ClientId) -> Result<usize> {
-        let (ref mut sock, fid, ref mut offset) = *self.clients.get_mut(&cid)
-            .ok_or(ErrorKind::ClientNotFound)?;
-        let (ref mut file, _) = *self.files.get_mut(&fid)
-            .ok_or(ErrorKind::FileNotWatched)?;
-        update_client(file, sock, offset)
     }
 
     /// Check the inotify fd and mark appropriate clients as dirty
@@ -123,7 +115,7 @@ impl WatcherPool {
     }
 
     /// Mark all the given file's watchers as dirty.
-    pub fn file_modified(&mut self, fid: FileId) -> Result<()> {
+    fn file_modified(&mut self, fid: FileId) -> Result<()> {
         let (_, ref watchers) = *self.files.get(&fid).ok_or(ErrorKind::FileNotWatched)?;
         for &cid in watchers {
             info!("Client {} marked as dirty", cid);
@@ -189,7 +181,12 @@ impl WatcherPool {
     }
 }
 
-
+/// Send up to `CHUNK_SIZE` bytes from the given file to the given sock, updating its offset.
+///
+/// If the client is up-to-date, the function will return with 0.
+/// If the client is unwritable, the function will return with 0.
+/// If the client has disconnected, the function will return with EPIPE.
+/// If the client is writeable and needed more than `CHUNK_SIZE`, the function will return
 fn update_client(file: &mut File, sock: &mut TcpStream, offset: &mut Offset) -> Result<usize> {
     let len = file.metadata()?.len();
     let cnt = match len as i64 - *offset {
