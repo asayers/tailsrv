@@ -69,33 +69,39 @@ done just hang up. The grammar for the headers is something like this:
 
 ```
 HEADER := list [dir] | stream <file> [from <INDEX>]
-INDEX  := start | end | byte <n> | line <n>
+INDEX  := start | end | byte <n> | line <n> | seqnum <n>
 ```
 
-- **paths**: `dir` and `file` are paths which may optionally begin with a '/'
-  character (TODO).
-- **byte-offsets**: `n` is a signed integer. If it is negative, it is
-  interpreted as meaning "counting back from the end of the file" (TODO). If it
-  is greater than the current length of the file, tailsrv waits until the file
-  reaches to desired length before sending any data.
-- **line-offsets**: `n` is a signed integer. If it is negative, it is
-  interpreted as meaning "counting back from the end of the file" (TODO). If it
-  is greater than the current length of the file, tailsrv just starts streaming
-  from the end (FIXME).
+`dir` and `file` are paths which may optionally begin with a '/' character
+(TODO).
 
-Communication happens in two phases: tailsrv will send nothing until a newline
-is recieved, and once a newline has been recieved it will ignore anything sent
-by the client. This implies that:
-
-- Sessions is not seekable. If you need to seek to a different point in the
-  log, hang up and start a new connection.
-- There's no multiplexing. If you want to stream multiple files, open multiple
-  connections.
-
-This design is deliberate and there's no plan to change it.
+Fields labeled as `<n>` are parsed as signed integers. If the value is
+negative, it is interpreted as meaning "counting back from the end of the file"
+(TODO).
 
 If the watched file is deleted or moved, tailsrv will terminate the connection.
 This is the only (non-error) condition in which tailsrv will end a stream.
+
+## Indexing
+
+tailsrv allows you to specify the point in the log at which it will start
+streaming data. This position may be specified according to the following
+indexing schemes:
+
+- **byte offset**: `stream <file> from byte <n>`. Does what it says on the tin.
+  If the offset is greater than the length of the file, tailsrv waits until the
+  file reaches to desired length before sending any data.
+- **line number**: `stream <file> from line <n>`. If the file contains fewer
+  than `<n>` lines, tailsrv just starts streaming from the end (FIXME).
+  *This indexing strategy only makes sense with files containing
+  newline-delimited data.*
+- **sequence number**: `stream <file> from seqnum <n>`. If the seqnum
+  is greater than the number of blobs in the file, tailsrv just starts
+  streaming from the end (FIXME). *This indexing strategy only makes sense with
+  files which are a concatenation of length-prefixed blobs, where the length is
+  encoded as a [base128 varint].*
+
+[base128 varint]: https://developers.google.com/protocol-buffers/docs/encoding#varints
 
 ## Performance characteristics
 
@@ -129,6 +135,23 @@ won't crash if you modify the middle of a file, but any expectations about log
 replayability your clients may have will be broken.
 
 ## Non-features
+
+### Session control
+
+At any time, communication is one-way: First the client sends a header, then
+tailsrv sends some data. tailsrv will send nothing until a newline is recieved,
+and once a newline has been recieved it will ignore anything sent by the
+client.
+
+A consequence of this is that the client can't control a session once tailsrv
+has begin sending data. In particular, this means that sessions are not
+seekable. If you need to seek to a different point in the log, hang up and
+start a new connection.
+
+### Multiplexing
+
+There's no multiplexing; it's strictly one-file-per-TCP-connection. If you want
+to stream multiple files, open multiple connections.
 
 ### Failure tolerance
 
@@ -164,34 +187,20 @@ something else. Here are some ideas:
   on the logserver to connect to the producer?  `nc producerserver 5432 >>
   logfile`?
 
-### Indexing
+### Fancy indexing
 
-> I want a stream starting at the first line written today - the timestamps are
-> all in there!
+> I want a stream starting at the first line written today. The timestamps are
+> all in there - just do a binary search!
 
 Unlike failover, it's *not* possible to address the indexing problem at the
 client side. And unlike producing, this is directly related to the job of
 tailsrv. This sounds like a feature tailsrv should have!
 
-Unfortunately, there are so many ways clients might want to index their data.
-
-- Perhaps we want to skip the nth occurance of some delimiting byte-sequence
-  (other than `\n`)? For reasonably-sized log files, it's probably acceptable
-  to compute this on the fly.
-- Perhaps our log file is a concatenation of length-prefixed binary blobs, and
-  we want to seek to the nth blob? If the logs are large, we'll probably need
-  to maintain an index for this.
-- Perhaps the entries in our log contain some monotonically increasing field,
-  and we want to binary-search for the first entry which exceeds a given value?
-  Now you're asking tailsrv to parse your log entries...
-
-I sense the danger of feature-creep here, so tailsrv currently has no indexing
-support.
-
-However, I'm considering providing a way to register "filters" with tailsrv
-which will extend its functionality. A "filter" is a program which takes a
-filepath and any other data the client provides in the header, and which
-returns a byte-offset into the given file. An example:
+Of course, tailsrv isn't doing to parse your log entries. I'm considering a way
+to register "filters" with tailsrv which will extend its functionality. A
+"filter" is a program which takes a filepath and any other data the client
+provides in the header, and which returns a byte-offset into the given file. An
+example:
 
 ```
 $ tsindex foo.log 2017-08-12 19:29

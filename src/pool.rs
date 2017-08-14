@@ -116,9 +116,10 @@ impl WatcherPool {
 
     /// Mark all the given file's watchers as dirty.
     fn file_modified(&mut self, fid: FileId) -> Result<()> {
+        debug!("File {:?} marked as dirty", fid);
         let (_, ref watchers) = *self.files.get(&fid).ok_or(ErrorKind::FileNotWatched)?;
         for &cid in watchers {
-            info!("Client {} marked as dirty", cid);
+            debug!("Client {} marked as dirty", cid);
             self.dirty_clients.push_back(cid);
         }
         Ok(())
@@ -126,7 +127,7 @@ impl WatcherPool {
 
     /// Mark the given client as dirty.
     pub fn client_writable(&mut self, cid: ClientId) -> Result<()> {
-        info!("Client {} marked as dirty", cid);
+        debug!("Client {} marked as dirty", cid);
         self.dirty_clients.push_back(cid);
         Ok(())
     }
@@ -146,7 +147,7 @@ impl WatcherPool {
                 x.insert((file, watchers));
             }
         }
-        let &(ref file, _) = self.files.get(&fid).unwrap();
+        let &mut(ref mut file, _) = self.files.get_mut(&fid).unwrap();
         // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
         let offset = resolve_index(file, index)?.unwrap();
         self.clients.insert(cid, (sock, fid, offset as i64));

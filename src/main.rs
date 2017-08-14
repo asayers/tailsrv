@@ -1,8 +1,10 @@
 extern crate clap;
 extern crate env_logger;
 #[macro_use] extern crate error_chain;
+extern crate fs2;
 extern crate ignore;
 extern crate inotify;
+extern crate integer_encoding;
 #[macro_use] extern crate log;
 extern crate memchr;
 extern crate memmap;
@@ -161,6 +163,7 @@ fn main() {
                 }
                 TypedToken::Inotify => {
                     // The inotify FD is readable => a watched file has been modified
+                    info!("Watched files have been modified");
                     // First, mark all clients interested in modifed files as dirty.
                     pool.check_watches().unwrap();
                     // Then send data until they're up-do-date.
@@ -169,6 +172,7 @@ fn main() {
                 TypedToken::PoolToken(cid) => {
                     if mio_event.readiness().is_writable() {
                         // A client in the pool has become writable => send some data
+                        info!("Client {} has become writable", cid);
                         pool.client_writable(cid).unwrap();
                         pool.handle_all_dirty().unwrap();
                     }
