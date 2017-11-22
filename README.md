@@ -3,46 +3,18 @@
 **STATUS:** It works, but some documented features are missing. (Look out for
 "TODO"/"FIXME" in the documentation below.)
 
-tailsrv is a high-performance file-streaming server. It's like `tail -f` in
-server form. It has high throughput, low latency, and scales to lots of clients
-(see [Performance characteristics](#performance-characteristics)). It is,
-however, Linux-only (see [Limitations](#limitations)).
+tailsrv is a high-performance file-streaming server.  It's like `tail -f` in
+server form.  It has high throughput, low latency, and scales to lots of
+clients (see [Performance](#performance)).  Setup is very simple, and clients
+don't require a special library.  It is, however, Linux-only (see
+[Limitations](#limitations)).
 
-Pick a port number and start the server in your desired directory:
+Client connections are monitored with epoll.  Files are monitored with inotify.
+When a file changes or a connection becomes writable, tailsrv `sendfile()`s the
+new data.
 
-```
-logserver:/var/log$ tailsrv -p 4321
-INFO:tailsrv: Serving files from "/var/log" on 0.0.0.0:4321
-```
+For a quick-start, see the [example usage](#example).
 
-Now that tailsrv is running in logserver:/var/log, the following commands will
-do roughly the same thing:
-
-```
-$ ssh logserver -- tail -f -n+1000 /var/log/nginx/access.log
-$ echo "stream nginx/access.log from line 1000" | nc logserver 4321
-```
-
-Rather than using netcat, however, you probably want to connect to tailsrv
-directly from your log-consuming application. This is very easy:
-
-```rust
-const log: &str = "nginx/access.log";
-const offset: usize = 1000;
-
-let sock = TcpStream::connect("logserver:4321")?;
-writeln!(sock, "stream {} from line {}", log, offset)?;
-for line in BufReader::new(sock).lines() {
-    /* handle log data */
-}
-```
-
-The example above is written in rust, but you can connect to tailsrv from any
-programming language without the need for a special client library.
-
-tailsrv is a relatively simple program.  Client connections are monitored with
-epoll. Files are monitored with inotify.  When a file changes or a connection
-becomes writable, we `sendfile()` the new data.
 
 ## Usage
 
@@ -66,6 +38,7 @@ When tailsrv is started, by default all regular files in and below the working
 directory become available for streaming.  You can exclude files by writing
 globs in a ".ignore" file - the syntax is the same as ".gitignore".  Excluded
 files will not show up in listings, and will not be streamable.
+
 
 ## Protocol
 
@@ -93,6 +66,7 @@ tailsrv sends some data.  tailsrv will send nothing until a newline is
 recieved, and once a newline has been recieved it will ignore anything sent by
 the client.
 
+
 ## Indexing
 
 tailsrv allows you to specify the point in the log at which it will start
@@ -114,7 +88,8 @@ indexing schemes:
 
 [base128 varint]: https://developers.google.com/protocol-buffers/docs/encoding#varints
 
-## Performance characteristics
+
+## Performance
 
 We use inotify to track modifications to files.  This allows us to avoid the
 latency associated with polling.  It also means that watches of quiescent files
@@ -133,6 +108,7 @@ other.  Some fairness properties are guaranteed (TODO: document these).
 
 TODO: Benchmarks
 
+
 ## Limitations
 
 tailsrv is Linux-only, due to its explicit dependence on epoll, inotify, and
@@ -146,6 +122,7 @@ When all clients for a file disconnect, the watch is removed.
 The server operator must ensure that all watched files are append-only.
 tailsrv won't crash if you modify the middle of a file, but any expectations
 about log replayability your clients may have will be broken.
+
 
 ## Non-features and missing features
 
@@ -194,6 +171,7 @@ Limitations of the design:
   appending a number to the filename and compressing it.  ...TODO...  This one
   is actually a genuine fundamental problem with tailsrv's design.
 
+
 ## Producing data
 
 Perhaps you want to write all your log-structured data to one place, and then
@@ -229,6 +207,42 @@ INFO:tailsrv: Registered filter "tsindex" as "timestamp"
 $ echo "stream foo.log from timestamp 2017-08-12 19:29" | nc logserver 4321
 ```
 -->
+
+
+## Example
+
+Pick a port number and start the server in your desired directory:
+
+```
+logserver:/var/log$ tailsrv -p 4321
+INFO:tailsrv: Serving files from "/var/log" on 0.0.0.0:4321
+```
+
+Now that tailsrv is running in logserver:/var/log, the following commands will
+do roughly the same thing:
+
+```
+$ ssh logserver -- tail -f -n+1000 /var/log/nginx/access.log
+$ echo "stream nginx/access.log from line 1000" | nc logserver 4321
+```
+
+Rather than using netcat, however, you probably want to connect to tailsrv
+directly from your log-consuming application. This is very easy:
+
+```rust
+const log: &str = "nginx/access.log";
+const offset: usize = 1000;
+
+let sock = TcpStream::connect("logserver:4321")?;
+writeln!(sock, "stream {} from line {}", log, offset)?;
+for line in BufReader::new(sock).lines() {
+    /* handle log data */
+}
+```
+
+The example above is written in rust, but you can connect to tailsrv from any
+programming language without the need for a special client library.
+
 
 <!--
 Server:
