@@ -9,27 +9,32 @@ extern crate integer_encoding;
 extern crate memchr;
 extern crate memmap;
 extern crate mio;
+extern crate mio_more;
 extern crate nix;
 #[macro_use] extern crate nom;
 extern crate same_file;
+extern crate slab;
 
 use clap::App;
 use env_logger::LogBuilder;
 use inotify::*;
 use log::LogLevelFilter;
 use mio::net::*;
+use mio_more::channel as mio_chan;
 use std::env::*;
+use std::fs::File;
 use std::io::prelude::*;
-use std::io::{self, BufReader, BufRead};
+use std::io::{BufReader, BufRead};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::thread;
+use std::usize;
 
-mod file_list; pub use file_list::*;
-mod header;  pub use header::*;
-mod index;  pub use index::*;
-mod pool; pub use pool::*;
-mod token_box; pub use token_box::*;
-mod types; pub use types::*;
+pub mod file_list; use file_list::*;
+pub mod header;  use header::*;
+pub mod index;  use index::*;
+pub mod pool; use pool::*;
+pub mod types;
 
 fn main() {
     // Define CLI options
@@ -47,13 +52,18 @@ fn main() {
     LogBuilder::new().filter(None, log_level).init().unwrap();
 
     // Init epoll, allocate buffer for epoll events
+    // const MAX_CLIENTS: usize  = 1024;
+    const EPOLL_LISTENER:   mio::Token = mio::Token(usize::MAX - 1);
+    const EPOLL_NEW_CLIENT: mio::Token = mio::Token(usize::MAX - 2);
+    const EPOLL_INOTIFY:    mio::Token = mio::Token(usize::MAX - 3);
+    const EPOLL_WORK:       mio::Token = mio::Token(usize::MAX - 4);
     let poll = mio::Poll::new().unwrap();
     let mut mio_events = mio::Events::with_capacity(1024);
 
     // Init inotify and register the inotify fd with epoll
     let inotify = Inotify::init().unwrap();
     poll.register(&inotify,
-        to_token(TypedToken::Inotify),
+        EPOLL_INOTIFY,
         mio::Ready::readable(),
         mio::PollOpt::level()).unwrap();
 
@@ -63,17 +73,21 @@ fn main() {
     let listen_addr = SocketAddr::new(inaddr_any, port);
     let listener = TcpListener::bind(&listen_addr).expect("Bind listen sock");
     poll.register(&listener,
-        to_token(TypedToken::Listener),
+        EPOLL_LISTENER,
         mio::Ready::readable(),
         mio::PollOpt::level()).unwrap();
 
-    // When a client first connects, it is asigned a ClientId by calling `next_cid()`.
-    let mut last_cid = 0;
-    let mut next_cid = move || -> ClientId { last_cid += 1; last_cid };
+    let (new_clients_tx, new_clients_rx) = mio_chan::channel();
+    poll.register(&new_clients_rx,
+        EPOLL_NEW_CLIENT,
+        mio::Ready::readable(),
+        mio::PollOpt::level()).unwrap();
 
-    // We then put the newly connected client in the nursery. It will stay there until it has sent
-    // a complete header.
-    let mut nursery: Map<ClientId, BufReader<TcpStream>> = Map::new();
+    let (work_tx, work_rx) = mio_chan::channel();
+    poll.register(&work_rx,
+        EPOLL_WORK,
+        mio::Ready::readable(),
+        mio::PollOpt::level()).unwrap();
 
     // If the client sends a "stream" header, it is then moved to the pool, which tracks which
     // clients are interested in which files.
@@ -85,96 +99,49 @@ fn main() {
         // Wait for something to happen
         poll.poll(&mut mio_events, None).unwrap();
         for mio_event in mio_events.iter() {
-            match from_token(mio_event.token()) {
-                TypedToken::Listener => {
+            match mio_event.token() {
+                EPOLL_LISTENER => {
                     // The listen socket is readable => a new client is trying to connect
                     let (sock, _) = listener.accept().unwrap();
-                    let cid = next_cid();
-                    info!("Client {} connected. Waiting for it to send a header...", cid);
+                    info!("Client connected. Waiting for it to send a header...");
                     // The first thing the client will do is send a header
-                    poll.register(&sock,
-                        to_token(TypedToken::NurseryToken(cid)),  // ...so we give it a nursery token
-                        mio::Ready::readable(),                   // ...watch for new data
-                        mio::PollOpt::edge()).unwrap();
-                    nursery.insert(cid, BufReader::new(sock));    // ...and store it in the nursery
+                    let new_clients_tx = new_clients_tx.clone();
+                    thread::spawn(move || foobar(sock, new_clients_tx));
                 }
-                TypedToken::NurseryToken(cid) => {
-                    if mio_event.readiness().is_readable() {
-                        // A client whih is in the nursery has sent some data. Let's try to read it
-                        // and parse it into a header.
-                        let header = {
-                            let rdr = nursery.get_mut(&cid)
-                                .ok_or(ErrorKind::ClientNotFound).unwrap();
-                            try_read_header(rdr).unwrap()
-                        };
-                        // If header is None, then we don't have enough data yet and should do
-                        // nothing.
-                        if let Some(header) = header {
-                            info!("Client {} sent header {:?}", cid, header);
-                            match header {
-                                Header::List => {
-                                    let mut sock = nursery.remove(&cid)
-                                        .ok_or(ErrorKind::ClientNotFound).unwrap()
-                                        .into_inner();
-                                    poll.deregister(&sock).unwrap();
-                                    // Listing files could be expensive, let's do it in a new thread.
-                                    thread::spawn(move || sock.write(list_files().unwrap().as_bytes()).unwrap() );
-                                }
-                                Header::Stream{ path, index } => {
-                                    // FIXME: File validation could be expensive! It blocks
-                                    // tailsrv.
-                                    if file_is_valid(&path) {
-                                        // OK! This client will start watching a file. Let's remove
-                                        // it from the nursery and change its epoll parameters.
-                                        let sock = nursery.remove(&cid)
-                                            .ok_or(ErrorKind::ClientNotFound).unwrap()
-                                            .into_inner();
-                                        poll.reregister(&sock,
-                                            to_token(TypedToken::PoolToken(cid)), // with a pool token
-                                            mio::Ready::writable(), // Watching for writability
-                                            mio::PollOpt::edge()).unwrap();
-                                        // And then we put it in the pool. This function also
-                                        // handles setting up inotify watches etc.
-                                        // FIXME: Index resolution could be expensive! It blocks
-                                        // tailsrv.
-                                        pool.register_client(cid, sock, &path, index).unwrap();
-                                    } else {
-                                        warn!("Client {} tried to access {:?} but isn't allowed", cid, path);
-                                        let sock = nursery.remove(&cid)
-                                            .ok_or(ErrorKind::ClientNotFound).unwrap()
-                                            .into_inner();
-                                        poll.deregister(&sock).unwrap();
-                                    }
-                                }
-                                Header::Stats => {
-                                    let mut sock = nursery.remove(&cid)
-                                        .ok_or(ErrorKind::ClientNotFound).unwrap()
-                                        .into_inner();
-                                    poll.deregister(&sock).unwrap();
-                                    if sock.peer_addr().unwrap().ip().is_loopback() {
-                                        writeln!(sock, "{:?}\n{:?}", nursery, pool).unwrap();
-                                    } else {
-                                        warn!("Client {} requested stats but isn't localhost", cid);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                EPOLL_NEW_CLIENT => {
+                    let (sock, path, offset) = new_clients_rx.try_recv().unwrap();
+                    let cid = {
+                        let entry = pool.socks.vacant_entry();
+                        let cid = entry.key();
+                        poll.register(&sock,
+                                      mio::Token(cid),
+                                      mio::Ready::writable(),
+                                      mio::PollOpt::edge()).unwrap();
+                        entry.insert(sock);
+                        cid
+                    };
+                    // And then we put it in the pool. This function also
+                    // handles setting up inotify watches etc.
+                    pool.register_client(cid, &path, offset).unwrap();
                 }
-                TypedToken::Inotify => {
+                EPOLL_WORK => {
+                    let cid = work_rx.try_recv().unwrap();
+                    let requeue = pool.handle_client(cid).unwrap();
+                    if requeue { work_tx.send(cid).unwrap(); }
+                }
+                EPOLL_INOTIFY => {
                     // The inotify FD is readable => a watched file has been modified
                     info!("Watched files have been modified");
                     // First, mark all clients interested in modifed files as dirty.
-                    pool.check_watches().unwrap();
-                    // Then send data until they're up-do-date.
-                    pool.handle_all_dirty().unwrap();
+                    for cid in pool.check_watches().unwrap() {
+                        work_tx.send(cid).unwrap();
+                    }
                 }
-                TypedToken::PoolToken(cid) => {
+                mio::Token(cid) => {
                     if mio_event.readiness().is_writable() {
                         // A client in the pool has become writable => send some data
                         info!("Client {} has become writable", cid);
-                        pool.client_writable(cid).unwrap();
-                        pool.handle_all_dirty().unwrap();
+                        work_tx.send(cid).unwrap();
                     }
                 }
             }
@@ -182,21 +149,51 @@ fn main() {
     }
 }
 
-/// Try to read a header from cid's socket
-//
-// FIXME: Clients can attack the server by sending lots of header data with no newline. Eventually
-// tailsrv will run out of memory and crash. TODO: length limit.
-// TODO: Perhaps we should also impose a time limit for sending a header.
-fn try_read_header(rdr: &mut BufReader<TcpStream>) -> Result<Option<Header>> {
-    match rdr.fill_buf() {
-        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
-        Err(e) => bail!(e),
-        Ok(buf) => {
-            debug!("Current buffer: {:?}", buf);
-            match header(buf) {
-                nom::IResult::Done(_, x) => Ok(Some(x)), // Leave the data in the buffer, it's fine
-                nom::IResult::Error(e) => bail!(e),
-                nom::IResult::Incomplete{..} => Ok(None), // FIXME: data gets removed somehow
+fn foobar(sock: TcpStream, chan: mio_chan::Sender<(TcpStream, PathBuf, usize)>) {
+    let mut buf = String::new();
+    let mut sock = BufReader::new(sock);
+    // TODO: timeout
+    // TODO: length limit
+    // TODO: does this work with non-blocking sockets?
+    sock.read_line(&mut buf).unwrap();
+    debug!("Client sent header: {:?}", &buf);
+    let hdr = match header(buf.as_bytes()) {
+        nom::IResult::Done(_, x) => x,
+        nom::IResult::Error(e) => {
+            error!("Bad header: {}", buf);
+            panic!(e);
+        }
+        nom::IResult::Incomplete{..} => {
+            error!("Partial header: {}", buf);
+            panic!();
+        }
+    };
+    info!("Client sent header {:?}", hdr);
+    let mut sock = sock.into_inner();
+    match hdr {
+        Header::List => {
+            // Listing files could be expensive, let's do it in this thread.
+            sock.write(list_files().unwrap().as_bytes()).unwrap();
+        }
+        Header::Stream{ path, index } => {
+            // FIXME: File validation could be expensive! It blocks
+            // tailsrv.
+            if file_is_valid(&path) {
+                // OK! This client will start watching a file. Let's remove
+                // it from the nursery and change its epoll parameters.
+                // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
+                let mut file = File::open(&path).unwrap();
+                let offset = resolve_index(&mut file, index).expect("index").unwrap();
+                chan.send((sock, path, offset)).unwrap();
+            } else {
+                warn!("Client tried to access {:?} but isn't allowed", path);
+            }
+        }
+        Header::Stats => {
+            if sock.peer_addr().unwrap().ip().is_loopback() {
+                writeln!(sock, "TODO").unwrap();
+            } else {
+                warn!("Client requested stats but isn't localhost");
             }
         }
     }
