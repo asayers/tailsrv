@@ -1,7 +1,7 @@
 # tailsrv
 
-**STATUS:** It works, but some documented features are missing. (Look out for
-"TODO"/"FIXME" in the documentation below.)
+**STATUS:** It mostly works, but some documented features are missing. (Look
+out for "TODO"/"FIXME" in the documentation below.)
 
 tailsrv is a high-performance file-streaming server.  It's like `tail -f` in
 server form.  It has high throughput, low latency, and scales to lots of
@@ -88,6 +88,13 @@ indexing schemes:
 
 [base128 varint]: https://developers.google.com/protocol-buffers/docs/encoding#varints
 
+If the `-i` flag is passed to tailsrv, it will maintain index files in /tmp -
+one for each log file and indexing method (TODO).  These indexes are built and
+updated lazily, so that unfollowed files don't incur a cost.  They can speed up
+seeks dramatically for large files.  Be aware though: if you use this option,
+you *really* need to make sure your log files are append-only!  If not, seeking
+will be totally broken.
+
 
 ## Performance
 
@@ -146,14 +153,21 @@ Non-features:
   as they're keeping track of their position in the log, they can connect to
   the backup server and carry on.  Of course, this means clients need to be
   aware of the backup server... sorry!
-* **Authentication & encryption**:  Use a VPN.  Seriously, if you care about
-  security, don't trust application developers to get your cryptography right.
-  Instead, just make sure the route to your fileserver is secure.  OpenVPN is a
-  pain?  Use [wireguard] instead.  Want to completely prohibit insecure access?
-  Run tailsrv in a network namespace which doesn't contain any non-vpn network
-  interfaces.  Want to allow unauthenticated access, but still want encryption?
-  You *can* do this with wireguard, but it may be more of a pain to set up...
-  sorry!
+* **Rotation**:  Use `logrotate(8)`.  When a file is renamed, all clients
+  streaming it will have their connections closed.  At this point clients
+  should reopen the connection from offset 0.
+* **Encryption**:  If you can, just [use a VPN][wireguard].  Don't trust
+  application developers to get your cryptography right - just make sure the
+  route to your fileserver is secure.  Want to completely prohibit insecure
+  access?  Run tailsrv in a network namespace which doesn't contain any non-vpn
+  network interfaces.  If you can't use a VPN, you're going to have to
+  encrypt/decrypt messages client-side.  (Look luck achieving eg. forward
+  secrecy though...)
+* **Authentication**:  Use a VPN.
+* **On-disk compression**:  You could enabling compression at the filesystem
+  level, but data would have to be decompressed before it is sent.  You could
+  also compress your messages when you write them, but there's a conflict
+  between compression efficiency and fine-grained indexing.
 
 [wireguard]: https://www.wireguard.com
 
@@ -162,14 +176,18 @@ Limitations of the design:
 * **Exotic indexing**:  "Send me data starting at 9am this morning."  Your log
   data may contain timestamps, but tailsrv doesn't know about them.  There's no
   way to extend tailsrv with custom indexing methods... sorry!
-* **Compression**:  If you want to compress the contents of a seekable unit (a
-  line, a length-prefixed blob): just do it.  If you want to compress larger
-  blocks, but retain seekability: do it at the filesystem level.  If you want
-  to send large blocks of data to clients compressed: that's not possible...
-  sorry!
-* **Rotation**:  It's normal to rotate a log file when it becomes too large, by
-  appending a number to the filename and compressing it.  ...TODO...  This one
-  is actually a genuine fundamental problem with tailsrv's design.
+* **On-wire compression**:  tailsrv doesn't do any on-the-fly compression, and
+  it won't index into a compressed chunk.  This means that it can't send data
+  which is compressed in large chunks but indexable in small chunks.  Kafka has
+  a decent story for this, however - consider using that instead?
+* **Stable messge numbers + rotation**:  I suggest above using `logrotate` to
+  handle long-lived streams.  Of course, this won't work with any design which
+  expects offsets to mean the same thing over time.  If you require both of
+  these features, then you really want a "message number" abstration which
+  isn't linked to the underlying storage. At this point, you should consider
+  Kafka.
+* **Fancy authentication**:  So you want usernames and ACLs, huh?  Sorry, we
+  don't do those.  Kafka has this feature though. Use that instead?
 
 
 ## Producing data
@@ -182,13 +200,12 @@ tailsrv will allow consumers to connect to your log server, but it doesn't help
 you get data onto it in the first place - for this task you'll need to use
 something else.  Here are some ideas:
 
-- For data which should be streamed with low latency, how about `producerprog |
+* For data which should be streamed with low latency, how about `producerprog |
   ssh logserver "cat >> logfile"`?
-- For data which can be written in batches, how about writing it locally and
+* For data which can be written in batches, how about writing it locally and
   then periodically running `rsync --append`?
-- If you're happy to invert the direction of control, how about running netcat
-  on the logserver to connect to the producer?  `nc producerserver 5432 >>
-  logfile`?
+* If you're happy to invert the direction of control, how about running `nc
+  producerserver 5432 >> logfile` on the logserver?
 
 
 <!--
