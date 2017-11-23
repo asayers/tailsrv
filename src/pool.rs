@@ -1,15 +1,14 @@
-use index::*;
 use inotify::*;
 use mio::net::TcpStream;
 use nix::sys::sendfile::sendfile;
 use nix;
-use std::collections::VecDeque;
+use slab::*;
 use std::collections::hash_map::Entry;
+use std::fmt::{self, Debug};
 use std::fs::File;
 use std::iter::FromIterator;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
-use std::fmt::{self, Debug};
 use types::*;
 
 /// Keeps track of which clients are interested in which files.
@@ -19,16 +18,16 @@ use types::*;
 /// - A watched file was modified;
 /// - A client became writable;
 pub struct WatcherPool {
+    pub socks: Slab<TcpStream>,
     files: Map<FileId, (File, Set<ClientId>)>,
-    clients: Map<ClientId, (TcpStream, FileId, Offset)>,
-    dirty_clients: VecDeque<ClientId>,
+    offsets: Map<ClientId, (FileId, Offset)>,
     inotify: Inotify,
     inotify_buf: Vec<u8>,
 }
 
 impl Debug for WatcherPool {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        (&self.files, &self.clients, &self.dirty_clients).fmt(f)
+        (&self.files, &self.offsets).fmt(f)
     }
 }
 
@@ -43,55 +42,48 @@ impl WatcherPool {
     pub fn new(inotify: Inotify) -> WatcherPool {
         WatcherPool {
             files: Map::new(),
-            clients: Map::new(),
-            dirty_clients: VecDeque::new(),
+            socks: Slab::new(),
+            offsets: Map::new(),
             inotify: inotify,
             inotify_buf: vec![0;4096],
         }
     }
 
-    /// Send data to all dirty clients until they're up-do-date, become unwritable, or hang up.
-    pub fn handle_all_dirty(&mut self) -> Result<()> {
-        loop {
-            let cid = match self.dirty_clients.pop_front() {
-                None => break,
-                Some(x) => x,
-            };
-            self.handle_client(cid)?;
-        }
-        Ok(())
-    }
-
     /// Send data to the given client, sending up to `CHUNK_SIZE` bytes from the file it's
     /// interested in.
-    fn handle_client(&mut self, cid: ClientId) -> Result<usize> {
+    ///
+    /// The return value indicates whether this client has more work to do.
+    pub fn handle_client(&mut self, cid: ClientId) -> Result<bool> {
         let ret = {
-            let (ref mut sock, fid, ref mut offset) = *self.clients.get_mut(&cid)
+            let (fid, ref mut offset) = *self.offsets.get_mut(&cid)
                 .ok_or(ErrorKind::ClientNotFound)?;
             let (ref mut file, _) = *self.files.get_mut(&fid)
                 .ok_or(ErrorKind::FileNotWatched)?;
+            let sock = self.socks.get_mut(cid).unwrap();
             update_client(file, sock, offset)
         };
         match ret {
-            Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::EPIPE)),_)) => {
+            Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::EPIPE)),_)) |
+            Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::ECONNRESET)),_)) => {
                 // The client hung up
                 self.deregister_client(cid)?;
-                Ok(0)
+                Ok(false)
+            }
+            Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::EAGAIN)), _)) => {
+                // The socket is not writeable. Don't requeue.
+                Ok(false)
             }
             Err(e) => bail!(e),
-            Ok(n) => {
-                if n >= CHUNK_SIZE {
-                    // We're (probably) not done yet.
-                    self.dirty_clients.push_back(cid);
-                }
-                Ok(n)
+            Ok((sent, wanted)) => {
+                Ok(wanted > sent as i64)
             }
         }
     }
 
     /// Check the inotify fd and mark appropriate clients as dirty
-    pub fn check_watches(&mut self) -> Result<()> {
+    pub fn check_watches(&mut self) -> Result<Vec<ClientId>> {
         // FIXME: ugly, inefficient implementation
+        let mut dirty_clients = vec![];
         let mut modified_files = vec![];
         let mut deleted_files = vec![];
         {
@@ -106,36 +98,24 @@ impl WatcherPool {
             }
         }
         for fid in modified_files {
-            self.file_modified(fid)?;
+            // Mark all the given file's watchers as dirty.
+            debug!("File {:?} marked as dirty", fid);
+            let (_, ref watchers) = *self.files.get(&fid).ok_or(ErrorKind::FileNotWatched)?;
+            for &cid in watchers {
+                debug!("Client {} marked as dirty", cid);
+                dirty_clients.push(cid);
+            }
         }
         for fid in deleted_files {
             self.deregister_file(fid)?;
         }
-        Ok(())
+        Ok(dirty_clients)
     }
 
-    /// Mark all the given file's watchers as dirty.
-    fn file_modified(&mut self, fid: FileId) -> Result<()> {
-        debug!("File {:?} marked as dirty", fid);
-        let (_, ref watchers) = *self.files.get(&fid).ok_or(ErrorKind::FileNotWatched)?;
-        for &cid in watchers {
-            debug!("Client {} marked as dirty", cid);
-            self.dirty_clients.push_back(cid);
-        }
-        Ok(())
-    }
-
-    /// Mark the given client as dirty.
-    pub fn client_writable(&mut self, cid: ClientId) -> Result<()> {
-        debug!("Client {} marked as dirty", cid);
-        self.dirty_clients.push_back(cid);
-        Ok(())
-    }
-
-    pub fn register_client(&mut self, cid: ClientId, sock: TcpStream, path: &Path,
-                           index: Index) -> Result<()> {
+    pub fn register_client(&mut self, cid: ClientId, path: &Path, offset: usize) -> Result<ClientId> {
         info!("Registering client {}", cid);
         let fid = self.inotify.add_watch(&path, watch_mask::MODIFY | watch_mask::DELETE_SELF).unwrap();
+        self.offsets.insert(cid, (fid, offset as i64));
         match self.files.entry(fid) {
             Entry::Occupied(x) => {
                 let (_, ref mut watchers) = *x.into_mut();
@@ -147,11 +127,7 @@ impl WatcherPool {
                 x.insert((file, watchers));
             }
         }
-        let &mut(ref mut file, _) = self.files.get_mut(&fid).unwrap();
-        // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
-        let offset = resolve_index(file, index)?.unwrap();
-        self.clients.insert(cid, (sock, fid, offset as i64));
-        Ok(())
+        Ok(cid)
     }
 
     /// HUPs the sock, dereg's the file if empty.
@@ -159,8 +135,8 @@ impl WatcherPool {
     // removed automatically, right?)
     fn deregister_client(&mut self, cid: ClientId) -> Result<()> {
         info!("Deregistering client {}", cid);
-        let (_, fid, _) = self.clients.remove(&cid).ok_or(ErrorKind::ClientNotFound)?;
-        vecdeque_remove(&mut self.dirty_clients, cid);
+        self.socks.remove(cid);
+        let (fid, _) = self.offsets.remove(&cid).unwrap();
         let noones_interested = {
             let (_, ref mut watchers) = *self.files.get_mut(&fid).ok_or(ErrorKind::FileNotWatched)?;
             watchers.remove(&cid);
@@ -177,25 +153,10 @@ impl WatcherPool {
         info!("Deregistering file {:?}", fid);
         let (_, watchers) = self.files.remove(&fid).ok_or(ErrorKind::FileNotWatched)?;
         for cid in watchers {
-            self.clients.remove(&cid);
+            self.offsets.remove(&cid);
         }
         self.inotify.rm_watch(fid)?;
         Ok(())
-    }
-}
-
-/// Removes all occurances of `target` from `xs`.
-// TODO: Unit tests
-fn vecdeque_remove<T: PartialEq>(xs: &mut VecDeque<T>, target: T) {
-    let mut end = xs.len();
-    let mut i = 0;
-    while i < end {
-        if xs[i] == target {
-            xs.remove(i);
-            end -= 1;
-        } else {
-            i += 1;
-        }
     }
 }
 
@@ -205,17 +166,15 @@ fn vecdeque_remove<T: PartialEq>(xs: &mut VecDeque<T>, target: T) {
 /// If the client is unwritable, the function will return with 0.
 /// If the client has disconnected, the function will return with EPIPE.
 /// If the client is writeable and needed more than `CHUNK_SIZE`, the function will return
-fn update_client(file: &mut File, sock: &mut TcpStream, offset: &mut Offset) -> Result<usize> {
+fn update_client(file: &mut File, sock: &mut TcpStream, offset: &mut Offset) -> Result<(usize, i64)> {
     let len = file.metadata()?.len();
-    let cnt = match len as i64 - *offset {
-        x if x <= 0 => return Ok(0),
+    let wanted = len as i64 - *offset;  // How many bytes the client wants
+    let cnt = match wanted {            // How many bytes the client will get
+        x if x <= 0 => return Ok((0, wanted)),
         x if x <= CHUNK_SIZE as i64=> x,
         _ => CHUNK_SIZE as i64,
     };
     info!("Sending {} bytes from offset {}", cnt, offset);
-    match sendfile(sock.as_raw_fd(), file.as_raw_fd(), Some(offset), cnt as usize) {
-        Err(nix::Error::Sys(nix::Errno::EAGAIN)) => Ok(0),
-        Err(e) => bail!(e),
-        Ok(n) => Ok(n),
-    }
+    let n = sendfile(sock.as_raw_fd(), file.as_raw_fd(), Some(offset), cnt as usize)?;
+    Ok((n, wanted))
 }
