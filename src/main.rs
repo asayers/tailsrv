@@ -18,13 +18,12 @@ extern crate slab;
 use clap::App;
 use inotify::*;
 use log::LogLevel;
-use mio::net::*;
 use mio_more::channel as mio_chan;
 use std::env::*;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::{BufReader, BufRead};
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::thread;
 use std::usize;
@@ -70,7 +69,7 @@ fn main() {
     let inaddr_any = "0.0.0.0".parse().unwrap();
     let port = args.value_of("port").unwrap().parse().unwrap();
     let listen_addr = SocketAddr::new(inaddr_any, port);
-    let listener = TcpListener::bind(&listen_addr).expect("Bind listen sock");
+    let listener = mio::net::TcpListener::bind(&listen_addr).expect("Bind listen sock");
     poll.register(&listener,
         EPOLL_LISTENER,
         mio::Ready::readable(),
@@ -101,7 +100,7 @@ fn main() {
             match mio_event.token() {
                 EPOLL_LISTENER => {
                     // The listen socket is readable => a new client is trying to connect
-                    let (sock, _) = listener.accept().unwrap();
+                    let (sock, _) = listener.accept_std().unwrap();
                     info!("Client connected. Waiting for it to send a header...");
                     // The first thing the client will do is send a header
                     let new_clients_tx = new_clients_tx.clone();
@@ -112,6 +111,7 @@ fn main() {
                     let cid = {
                         let entry = pool.socks.vacant_entry();
                         let cid = entry.key();
+                        let sock = mio::net::TcpStream::from_stream(sock).unwrap();
                         poll.register(&sock,
                                       mio::Token(cid),
                                       mio::Ready::writable(),
@@ -153,7 +153,6 @@ fn foobar(sock: TcpStream, chan: mio_chan::Sender<(TcpStream, PathBuf, usize)>) 
     let mut sock = BufReader::new(sock);
     // TODO: timeout
     // TODO: length limit
-    // TODO: does this work with non-blocking sockets?
     sock.read_line(&mut buf).unwrap();
     debug!("Client sent header: {:?}", &buf);
     let hdr = match header(buf.as_bytes()) {
@@ -175,8 +174,6 @@ fn foobar(sock: TcpStream, chan: mio_chan::Sender<(TcpStream, PathBuf, usize)>) 
             sock.write(list_files().unwrap().as_bytes()).unwrap();
         }
         Header::Stream{ path, index } => {
-            // FIXME: File validation could be expensive! It blocks
-            // tailsrv.
             if file_is_valid(&path) {
                 // OK! This client will start watching a file. Let's remove
                 // it from the nursery and change its epoll parameters.
