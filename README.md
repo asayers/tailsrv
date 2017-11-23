@@ -19,7 +19,7 @@ For a quick-start, see the [example usage](#example).
 ## Usage
 
 ```
-tailsrv 0.2
+tailsrv 0.3
 A server which allows clients to tail files in the working directory
 
 USAGE:
@@ -27,6 +27,7 @@ USAGE:
 
 FLAGS:
     -h, --help       Prints help information
+    -i, --index      Lazily maintain index files in /tmp for faster seeking
     -q, --quiet      Don't produce output unless there's a problem
     -V, --version    Prints version information
 

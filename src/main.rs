@@ -37,10 +37,11 @@ pub mod types;
 fn main() {
     // Define CLI options
     let args = App::new("tailsrv")
-        .version("0.2")
+        .version("0.3")
         .about("A server which allows clients to tail files in the working directory")
         .args_from_usage(
             "-p --port=<port> 'The port number on which to listen for new connections'
+             -i --index       'Lazily maintain index files in /tmp for faster seeking'
              -q --quiet       'Don't produce output unless there's a problem'")
         .get_matches();
 
@@ -48,6 +49,10 @@ fn main() {
     let log_level = if args.is_present("quiet") { LogLevel::Warn }
                     else                        { LogLevel::Info };
     loggerv::init_with_level(log_level).unwrap();
+
+    if args.is_present("index") {
+        warn!("Index files are not implemented yet");
+    }
 
     // Init epoll, allocate buffer for epoll events
     // const MAX_CLIENTS: usize  = 1024;
