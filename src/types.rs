@@ -23,9 +23,7 @@ error_chain! {
     }
     errors {
         NoonesInterested
-        HeaderNotEnoughBytes
         AlreadyConnected
-        HeaderTooSlow
         ClientNotFound
         IllegalFile
         FileNotWatched

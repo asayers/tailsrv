@@ -1,11 +1,11 @@
 extern crate clap;
-extern crate env_logger;
 #[macro_use] extern crate error_chain;
 extern crate fs2;
 extern crate ignore;
 extern crate inotify;
 extern crate integer_encoding;
 #[macro_use] extern crate log;
+extern crate loggerv;
 extern crate memchr;
 extern crate memmap;
 extern crate mio;
@@ -16,9 +16,8 @@ extern crate same_file;
 extern crate slab;
 
 use clap::App;
-use env_logger::LogBuilder;
 use inotify::*;
-use log::LogLevelFilter;
+use log::LogLevel;
 use mio::net::*;
 use mio_more::channel as mio_chan;
 use std::env::*;
@@ -47,9 +46,9 @@ fn main() {
         .get_matches();
 
     // Init logger
-    let log_level = if args.is_present("quiet") { LogLevelFilter::Warn }
-                    else                        { LogLevelFilter::Info };
-    LogBuilder::new().filter(None, log_level).init().unwrap();
+    let log_level = if args.is_present("quiet") { LogLevel::Warn }
+                    else                        { LogLevel::Info };
+    loggerv::init_with_level(log_level).unwrap();
 
     // Init epoll, allocate buffer for epoll events
     // const MAX_CLIENTS: usize  = 1024;
