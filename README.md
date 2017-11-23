@@ -154,41 +154,59 @@ Non-features:
   as they're keeping track of their position in the log, they can connect to
   the backup server and carry on.  Of course, this means clients need to be
   aware of the backup server... sorry!
-* **Rotation**:  Use `logrotate(8)`.  When a file is renamed, all clients
-  streaming it will have their connections closed.  At this point clients
-  should reopen the connection from offset 0.
-* **Encryption**:  If you can, just [use a VPN][wireguard].  Don't trust
-  application developers to get your cryptography right - just make sure the
-  route to your fileserver is secure.  Want to completely prohibit insecure
-  access?  Run tailsrv in a network namespace which doesn't contain any non-vpn
-  network interfaces.  If you can't use a VPN, you're going to have to
-  encrypt/decrypt messages client-side.  (Look luck achieving eg. forward
-  secrecy though...)
-* **Authentication**:  Use a VPN.
-* **On-disk compression**:  You could enabling compression at the filesystem
-  level, but data would have to be decompressed before it is sent.  You could
-  also compress your messages when you write them, but there's a conflict
-  between compression efficiency and fine-grained indexing.
+* **Rotation**:  This must be implemented manually, and the producer and
+  consumer must agree on the policy.  For instance, suppose the producer
+  increments a counter in the filename after 1MB.  Then the consumer must keep
+  track of how many bytes it has read, and start reading the next file after
+  1MB of data has come in.
+* **Encryption**:  If you can, [use a VPN][wireguard].  Don't trust me with
+  your crypto - just make sure the route to your fileserver is secure.  Want to
+  completely prohibit insecure access?  Run tailsrv in a network namespace
+  which doesn't contain any non-vpn network interfaces.  If you can't use a
+  VPN, you're going to have to encrypt/decrypt messages client-side.  (Good
+  luck achieving eg. forward secrecy though...)
+* **Authentication**:  Using a VPN solves this too (when requirements are
+  simple).
+* **Compression**:  You can compress your messages when you write them, but
+  there's a conflict between compression efficiency and fine-grained indexing.
+  Perhaps you can regain some efficiency by [preparing a dictionary][zstd]?
 
 [wireguard]: https://www.wireguard.com
+[zstd]: https://github.com/facebook/zstd#the-case-for-small-data-compression
 
 Limitations of the design:
 
+* **Good compression**:  tailsrv doesn't do any on-the-fly compression,
+  and it won't index into a compressed chunk.  This means that it can't send
+  data which is compressed in large chunks but indexable in small chunks.
+  Kafka has a decent story for this, however - consider using that instead?
+* **Fancy authentication**:  So you want usernames and ACLs, huh?  Sorry, we
+  don't do those.  Kafka has this feature though - use that instead?
 * **Exotic indexing**:  "Send me data starting at 9am this morning."  Your log
   data may contain timestamps, but tailsrv doesn't know about them.  There's no
-  way to extend tailsrv with custom indexing methods... sorry!
-* **On-wire compression**:  tailsrv doesn't do any on-the-fly compression, and
-  it won't index into a compressed chunk.  This means that it can't send data
-  which is compressed in large chunks but indexable in small chunks.  Kafka has
-  a decent story for this, however - consider using that instead?
-* **Stable messge numbers + rotation**:  I suggest above using `logrotate` to
-  handle long-lived streams.  Of course, this won't work with any design which
-  expects offsets to mean the same thing over time.  If you require both of
-  these features, then you really want a "message number" abstration which
-  isn't linked to the underlying storage. At this point, you should consider
-  Kafka.
-* **Fancy authentication**:  So you want usernames and ACLs, huh?  Sorry, we
-  don't do those.  Kafka has this feature though. Use that instead?
+  way to extend tailsrv with custom indexing methods (at present).
+
+<!--
+The fundamental difference between tailsrv and Kafka is how indexing works:  in
+tailsrv, you're referring to properties of the underlying storage (byte offset,
+line number, etc.); in Kafka, you're referring to an abstract "message number".
+
+tailsrv forces the user to decide on a number of trade-offs - tensions arising
+from the fact that indexing and storage are not separated:
+
+1. Log rotation is visible. Producers and consumers must be aware of the
+   rotation policy.
+2. If you do large-scale compression, you lose index granularity.
+
+The reason Kafka abstracts indexing away from storage is so that you can have
+your cake and eat it, with regard to the above trade-offs.
+
+So Kafka presents an opaque abstract interface: and all details of the
+underlying storage are hidden, and all access to your data must happen via the
+broker.  tailsrv, by contract, is transparent, and can therefore fuse the
+producer interface and the underlying storage.  However, Kafka's abstraction
+enables some key features, which tailsrv necessarily lacks.
+-->
 
 
 ## Producing data
