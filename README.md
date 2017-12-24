@@ -13,6 +13,13 @@ Client connections are monitored with epoll.  Files are monitored with inotify.
 When a file changes or a connection becomes writable, tailsrv `sendfile()`s the
 new data.
 
+Compared to a simple TCP connection between your producer and consumer, a
+tailsrv instance in the middle can be used to provide:
+
+* **fan-in**:  many producers, safely interleaved.
+* **fan-out**:  many consumers, without putting extra stress on the producer.
+* **replay**:  go back in time though a socket's history.
+
 For a quick-start, see the [example usage](#example).
 
 
@@ -74,14 +81,14 @@ tailsrv allows you to specify the point in the log at which it will start
 streaming data.  This position may be specified according to the following
 indexing schemes:
 
-* **byte offset**: `stream <file> from byte <n>`. Does what it says on the tin.
+* **byte offset**:  `stream <file> from byte <n>`. Does what it says on the tin.
   If the offset is greater than the length of the file, tailsrv waits until the
   file reaches to desired length before sending any data.
-* **line number**: `stream <file> from line <n>`.  If the file contains fewer
+* **line number**:  `stream <file> from line <n>`.  If the file contains fewer
   than `<n>` lines, tailsrv just starts streaming from the end (FIXME).  *This
   indexing strategy only makes sense with files containing newline-delimited
   data.*
-* **sequence number**: `stream <file> from seqnum <n>`.  If the seqnum
+* **sequence number**:  `stream <file> from seqnum <n>`.  If the seqnum
   is greater than the number of blobs in the file, tailsrv just starts
   streaming from the end (FIXME).  *This indexing strategy only makes sense
   with files which are a concatenation of length-prefixed blobs, where the
@@ -141,12 +148,12 @@ coming from eg. Kafka.
 
 Non-features:
 
-* **Seeking**:  A client can't control the session once tailsrv has begin
-  sending data.  Therefore, if you need to seek to a different point in the
-  log, you must hang up and start a new connection.
-* **Multiplexing**:  You can't multiplex data from multiple files across the
-  same TCP connection; it's strictly one-file-per-connection.  If you want to
-  stream multiple files, open multiple connections.
+* **In-band session control**:  A client can't communicate with tailsrv one it
+  has begun sending data.  Therefore, if you need to seek to a different point
+  in the log, you must hang up and start a new connection.
+* **File multiplexing**:  You can't multiplex data from multiple files across
+  the same TCP connection: it's strictly one-file-per-connection.  If you want
+  to stream multiple files, open multiple connections.
 * **Fault tolerance**:  If you need writen data to remain available when your
   log server dies, just replicate it to another machine which is also running
   tailsrv.  (If you have two machines physically next to each other, how about
@@ -154,17 +161,15 @@ Non-features:
   as they're keeping track of their position in the log, they can connect to
   the backup server and carry on.  Of course, this means clients need to be
   aware of the backup server... sorry!
-* **Rotation**:  This must be implemented manually, and the producer and
-  consumer must agree on the policy.  For instance, suppose the producer
-  increments a counter in the filename after 1MB.  Then the consumer must keep
-  track of how many bytes it has read, and start reading the next file after
-  1MB of data has come in.
+* **Auto-rotation**:  Rotation must be implemented manually, and the producer
+  and consumer must agree on the policy.  For instance, suppose the producer
+  increments a counter in the filename after 1GB.  Then the consumer must keep
+  track of how many bytes it has read, and start reading the next file when
+  it reaches the 1GB mark.
 * **Encryption**:  If you can, [use a VPN][wireguard].  Don't trust me with
   your crypto - just make sure the route to your fileserver is secure.  Want to
   completely prohibit insecure access?  Run tailsrv in a network namespace
-  which doesn't contain any non-vpn network interfaces.  If you can't use a
-  VPN, you're going to have to encrypt/decrypt messages client-side.  (Good
-  luck achieving eg. forward secrecy though...)
+  which doesn't contain any non-vpn network interfaces.
 * **Authentication**:  Using a VPN solves this too (when requirements are
   simple).
 * **Compression**:  You can compress your messages when you write them, but
@@ -180,6 +185,10 @@ Limitations of the design:
   and it won't index into a compressed chunk.  This means that it can't send
   data which is compressed in large chunks but indexable in small chunks.
   Kafka has a decent story for this, however - consider using that instead?
+* **Ad-hoc encryption**:  What if you don't have a VPN?  You're going to have
+  to encrypt/decrypt messages client-side.  This is not a great situation (good
+  luck achieving eg. forward secrecy).  Ideally tailsrv should support
+  encrypted sockets (TLS or noise sockets).
 * **Fancy authentication**:  So you want usernames and ACLs, huh?  Sorry, we
   don't do those.  Kafka has this feature though - use that instead?
 * **Exotic indexing**:  "Send me data starting at 9am this morning."  Your log
