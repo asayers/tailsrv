@@ -59,7 +59,7 @@ impl WatcherPool {
                 .ok_or(ErrorKind::ClientNotFound)?;
             let (ref mut file, _) = *self.files.get_mut(&fid)
                 .ok_or(ErrorKind::FileNotWatched)?;
-            let sock = self.socks.get_mut(cid).unwrap();
+            let sock = self.socks.get_mut(cid).ok_or(ErrorKind::ConnectionNotFound)?;
             update_client(file, sock, offset)
         };
         match ret {
@@ -114,7 +114,7 @@ impl WatcherPool {
 
     pub fn register_client(&mut self, cid: ClientId, path: &Path, offset: usize) -> Result<ClientId> {
         info!("Registering client {}", cid);
-        let fid = self.inotify.add_watch(&path, watch_mask::MODIFY | watch_mask::DELETE_SELF).unwrap();
+        let fid = self.inotify.add_watch(&path, watch_mask::MODIFY | watch_mask::DELETE_SELF)?;
         self.offsets.insert(cid, (fid, offset as i64));
         match self.files.entry(fid) {
             Entry::Occupied(x) => {
@@ -136,7 +136,7 @@ impl WatcherPool {
     fn deregister_client(&mut self, cid: ClientId) -> Result<()> {
         info!("Deregistering client {}", cid);
         self.socks.remove(cid);
-        let (fid, _) = self.offsets.remove(&cid).unwrap();
+        let (fid, _) = self.offsets.remove(&cid).ok_or(ErrorKind::ClientNotFound)?;
         let noones_interested = {
             let (_, ref mut watchers) = *self.files.get_mut(&fid).ok_or(ErrorKind::FileNotWatched)?;
             watchers.remove(&cid);

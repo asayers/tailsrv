@@ -1,3 +1,4 @@
+extern crate byteorder;
 extern crate clap;
 #[macro_use] extern crate error_chain;
 extern crate fs2;
@@ -12,6 +13,7 @@ extern crate mio;
 extern crate mio_more;
 extern crate nix;
 #[macro_use] extern crate nom;
+extern crate rand;
 extern crate same_file;
 extern crate slab;
 
@@ -109,7 +111,7 @@ fn main() {
                     info!("Client connected. Waiting for it to send a header...");
                     // The first thing the client will do is send a header
                     let new_clients_tx = new_clients_tx.clone();
-                    thread::spawn(move || foobar(sock, new_clients_tx));
+                    thread::spawn(move || wait_for_header(sock, new_clients_tx));
                 }
                 EPOLL_NEW_CLIENT => {
                     let (sock, path, offset) = new_clients_rx.try_recv().unwrap();
@@ -153,7 +155,7 @@ fn main() {
     }
 }
 
-fn foobar(sock: TcpStream, chan: mio_chan::Sender<(TcpStream, PathBuf, usize)>) {
+fn wait_for_header(sock: TcpStream, chan: mio_chan::Sender<(TcpStream, PathBuf, usize)>) {
     let mut buf = String::new();
     let mut sock = BufReader::new(sock);
     // TODO: timeout
@@ -176,17 +178,21 @@ fn foobar(sock: TcpStream, chan: mio_chan::Sender<(TcpStream, PathBuf, usize)>) 
     match hdr {
         Header::List => {
             // Listing files could be expensive, let's do it in this thread.
+            // TODO: Also give the current length of each file (bytes, lines, seqnum)
             sock.write(list_files().unwrap().as_bytes()).unwrap();
         }
         Header::Stream{ path, index } => {
             if file_is_valid(&path) {
                 // OK! This client will start watching a file. Let's remove
                 // it from the nursery and change its epoll parameters.
-                // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
+                // TODO: If resolving returns `None`, we should re-resolve it every time there's
+                // new data.
                 let mut file = File::open(&path).unwrap();
                 let offset = resolve_index(&mut file, index).expect("index").unwrap();
                 chan.send((sock, path, offset)).unwrap();
             } else {
+                // TODO: If the file doesn't exist yet, we should keep the connection alive and
+                // wait until it does
                 warn!("Client tried to access {:?} but isn't allowed", path);
             }
         }

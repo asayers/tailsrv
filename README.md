@@ -196,6 +196,15 @@ Limitations of the design:
   way to extend tailsrv with custom indexing methods (at present).
 
 <!--
+  The good
+  news is that, since tailsrv doesn't hide your data, you can write your own
+  index server which accepts a "from 9am" request, reads the log file, and
+  responds with a byte offset.  The downside is that initialising a stream
+  takes two round trips.
+
+
+
+
 The fundamental difference between tailsrv and Kafka is how indexing works:  in
 tailsrv, you're referring to properties of the underlying storage (byte offset,
 line number, etc.); in Kafka, you're referring to an abstract "message number".

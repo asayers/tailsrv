@@ -11,7 +11,7 @@ pub type Map<K,V> = HashMap<K, V, RandomState>;
 pub type Set<K> = HashSet<K, RandomState>;
 pub type FileId = WatchDescriptor;
 pub type ClientId = usize;
-pub type Offset = i64;
+pub type Offset = i64;  // A byte offset into a file
 
 error_chain! {
     foreign_links {
@@ -24,8 +24,9 @@ error_chain! {
     errors {
         NoonesInterested
         AlreadyConnected
-        ClientNotFound
         IllegalFile
+        ConnectionNotFound
+        ClientNotFound
         FileNotWatched
     }
 }

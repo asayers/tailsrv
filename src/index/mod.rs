@@ -2,8 +2,9 @@ use std::fs::File;
 use std::ops::Neg;
 use types::*;
 
-mod line;     use self::line::*;
-mod prefixed; use self::prefixed::*;
+pub mod cache;
+mod line;   use self::line::*;
+mod seqnum; use self::seqnum::*;
 
 #[derive(Debug)]
 pub enum Index {
@@ -25,7 +26,7 @@ pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
         Index::Byte(x) => Some(file.metadata()?.len() as usize - (x.neg() as usize)),
         Index::Line(x) if x >= 0 => linebyte(file, x as usize),
         Index::Line(x) => rlinebyte(file, x.neg() as usize),
-        Index::SeqNum(x) => seqbyte(file, x),
+        Index::SeqNum(x) => seqbyte(file, x, None),
         Index::Start => Some(0),
         Index::End => Some(file.metadata()?.len() as usize),
     })
