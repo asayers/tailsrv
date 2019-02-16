@@ -3,7 +3,7 @@ authors = ["Alex Sayers <alex.sayers@gmail.com>"]
 name = "tailsrv"
 version = "0.3.0"
 readme = "README.md"
-license = "MIT OR Apache-2.0"
+license = "Unlicense"
 
 [dependencies]
 clap = "2.27"
