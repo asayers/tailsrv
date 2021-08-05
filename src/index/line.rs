@@ -18,7 +18,7 @@ pub fn linebyte(file: &File, cnt: usize) -> Option<usize> {
         return Some(0);
     }
     file.lock_exclusive().expect("Lock file to resolve index"); // Try to make mmaping safer
-    let mmap = unsafe { Mmap::map(&file).unwrap() };
+    let mmap = unsafe { Mmap::map(file).unwrap() };
     Memchr::new(b'\n', &mmap).nth(cnt - 1)
 }
 
@@ -28,6 +28,6 @@ pub fn rlinebyte(file: &File, cnt: usize) -> Option<usize> {
         return Some(0);
     }
     file.lock_exclusive().expect("Lock file to resolve index"); // Try to make mmaping safer
-    let mmap = unsafe { Mmap::map(&file).unwrap() };
+    let mmap = unsafe { Mmap::map(file).unwrap() };
     Memchr::new(b'\n', &mmap).rev().nth(cnt - 1)
 }

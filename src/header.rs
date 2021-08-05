@@ -26,10 +26,7 @@ named!(
             >> path: path
             >> tag!(" from ")
             >> index: index
-            >> (Header::Stream {
-                path: path,
-                index: index
-            })
+            >> (Header::Stream { path, index })
     )
 );
 named!(

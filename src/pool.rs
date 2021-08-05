@@ -44,7 +44,7 @@ impl WatcherPool {
             files: Map::new(),
             socks: Slab::new(),
             offsets: Map::new(),
-            inotify: inotify,
+            inotify,
             inotify_buf: vec![0; 4096],
         }
     }
@@ -71,7 +71,7 @@ impl WatcherPool {
                 // The socket is not writeable. Don't requeue.
                 Ok(false)
             }
-            Err(e) => return Err(e),
+            Err(e) => Err(e),
             Ok((sent, wanted)) => Ok(wanted > sent as i64),
         }
     }
@@ -86,10 +86,10 @@ impl WatcherPool {
             let events = self.inotify.read_events_blocking(&mut self.inotify_buf)?;
             for ev in events {
                 if ev.mask.contains(event_mask::MODIFY) {
-                    modified_files.push(ev.wd.clone());
+                    modified_files.push(ev.wd);
                 }
                 if ev.mask.contains(event_mask::DELETE_SELF) {
-                    deleted_files.push(ev.wd.clone());
+                    deleted_files.push(ev.wd);
                 }
             }
         }
