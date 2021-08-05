@@ -1,17 +1,20 @@
 extern crate clap;
-#[macro_use] extern crate error_chain;
+#[macro_use]
+extern crate error_chain;
 extern crate fs2;
 extern crate ignore;
 extern crate inotify;
 extern crate integer_encoding;
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 extern crate loggerv;
 extern crate memchr;
 extern crate memmap;
 extern crate mio;
 extern crate mio_more;
 extern crate nix;
-#[macro_use] extern crate nom;
+#[macro_use]
+extern crate nom;
 extern crate same_file;
 extern crate slab;
 
@@ -22,16 +25,20 @@ use mio_more::channel as mio_chan;
 use std::env::*;
 use std::fs::File;
 use std::io::prelude::*;
-use std::io::{BufReader, BufRead};
+use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::thread;
 use std::usize;
 
-pub mod file_list; use file_list::*;
-pub mod header;  use header::*;
-pub mod index;  use index::*;
-pub mod pool; use pool::*;
+pub mod file_list;
+use file_list::*;
+pub mod header;
+use header::*;
+pub mod index;
+use index::*;
+pub mod pool;
+use pool::*;
 pub mod types;
 
 fn main() {
@@ -42,12 +49,16 @@ fn main() {
         .args_from_usage(
             "-p --port=<port> 'The port number on which to listen for new connections'
              -i --index       'Lazily maintain index files in /tmp for faster seeking'
-             -q --quiet       'Don't produce output unless there's a problem'")
+             -q --quiet       'Don't produce output unless there's a problem'",
+        )
         .get_matches();
 
     // Init logger
-    let log_level = if args.is_present("quiet") { LogLevel::Warn }
-                    else                        { LogLevel::Info };
+    let log_level = if args.is_present("quiet") {
+        LogLevel::Warn
+    } else {
+        LogLevel::Info
+    };
     loggerv::init_with_level(log_level).unwrap();
 
     if args.is_present("index") {
@@ -56,48 +67,64 @@ fn main() {
 
     // Init epoll, allocate buffer for epoll events
     // const MAX_CLIENTS: usize  = 1024;
-    const EPOLL_LISTENER:   mio::Token = mio::Token(usize::MAX - 1);
+    const EPOLL_LISTENER: mio::Token = mio::Token(usize::MAX - 1);
     const EPOLL_NEW_CLIENT: mio::Token = mio::Token(usize::MAX - 2);
-    const EPOLL_INOTIFY:    mio::Token = mio::Token(usize::MAX - 3);
-    const EPOLL_WORK:       mio::Token = mio::Token(usize::MAX - 4);
+    const EPOLL_INOTIFY: mio::Token = mio::Token(usize::MAX - 3);
+    const EPOLL_WORK: mio::Token = mio::Token(usize::MAX - 4);
     let poll = mio::Poll::new().unwrap();
     let mut mio_events = mio::Events::with_capacity(1024);
 
     // Init inotify and register the inotify fd with epoll
     let inotify = Inotify::init().unwrap();
-    poll.register(&inotify,
+    poll.register(
+        &inotify,
         EPOLL_INOTIFY,
         mio::Ready::readable(),
-        mio::PollOpt::level()).unwrap();
+        mio::PollOpt::level(),
+    )
+    .unwrap();
 
     // Bind the listen socket and register it with epoll
     let inaddr_any = "0.0.0.0".parse().unwrap();
     let port = args.value_of("port").unwrap().parse().unwrap();
     let listen_addr = SocketAddr::new(inaddr_any, port);
     let listener = mio::net::TcpListener::bind(&listen_addr).expect("Bind listen sock");
-    poll.register(&listener,
+    poll.register(
+        &listener,
         EPOLL_LISTENER,
         mio::Ready::readable(),
-        mio::PollOpt::level()).unwrap();
+        mio::PollOpt::level(),
+    )
+    .unwrap();
 
     let (new_clients_tx, new_clients_rx) = mio_chan::channel();
-    poll.register(&new_clients_rx,
+    poll.register(
+        &new_clients_rx,
         EPOLL_NEW_CLIENT,
         mio::Ready::readable(),
-        mio::PollOpt::level()).unwrap();
+        mio::PollOpt::level(),
+    )
+    .unwrap();
 
     let (work_tx, work_rx) = mio_chan::channel();
-    poll.register(&work_rx,
+    poll.register(
+        &work_rx,
         EPOLL_WORK,
         mio::Ready::readable(),
-        mio::PollOpt::level()).unwrap();
+        mio::PollOpt::level(),
+    )
+    .unwrap();
 
     // If the client sends a "stream" header, it is then moved to the pool, which tracks which
     // clients are interested in which files.
     let mut pool = WatcherPool::new(inotify);
 
     // Enter runloop
-    info!("Serving files from {:?} on {}", current_dir().unwrap(), listen_addr);
+    info!(
+        "Serving files from {:?} on {}",
+        current_dir().unwrap(),
+        listen_addr
+    );
     loop {
         // Wait for something to happen
         poll.poll(&mut mio_events, None).unwrap();
@@ -117,10 +144,13 @@ fn main() {
                         let entry = pool.socks.vacant_entry();
                         let cid = entry.key();
                         let sock = mio::net::TcpStream::from_stream(sock).unwrap();
-                        poll.register(&sock,
-                                      mio::Token(cid),
-                                      mio::Ready::writable(),
-                                      mio::PollOpt::edge()).unwrap();
+                        poll.register(
+                            &sock,
+                            mio::Token(cid),
+                            mio::Ready::writable(),
+                            mio::PollOpt::edge(),
+                        )
+                        .unwrap();
                         entry.insert(sock);
                         cid
                     };
@@ -131,7 +161,9 @@ fn main() {
                 EPOLL_WORK => {
                     let cid = work_rx.try_recv().unwrap();
                     let requeue = pool.handle_client(cid).unwrap();
-                    if requeue { work_tx.send(cid).unwrap(); }
+                    if requeue {
+                        work_tx.send(cid).unwrap();
+                    }
                 }
                 EPOLL_INOTIFY => {
                     // The inotify FD is readable => a watched file has been modified
@@ -166,7 +198,7 @@ fn foobar(sock: TcpStream, chan: mio_chan::Sender<(TcpStream, PathBuf, usize)>) 
             error!("Bad header: {}", buf);
             panic!(e);
         }
-        nom::IResult::Incomplete{..} => {
+        nom::IResult::Incomplete { .. } => {
             error!("Partial header: {}", buf);
             panic!();
         }
@@ -178,7 +210,7 @@ fn foobar(sock: TcpStream, chan: mio_chan::Sender<(TcpStream, PathBuf, usize)>) 
             // Listing files could be expensive, let's do it in this thread.
             sock.write(list_files().unwrap().as_bytes()).unwrap();
         }
-        Header::Stream{ path, index } => {
+        Header::Stream { path, index } => {
             if file_is_valid(&path) {
                 // OK! This client will start watching a file. Let's remove
                 // it from the nursery and change its epoll parameters.

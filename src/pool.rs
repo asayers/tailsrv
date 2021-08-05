@@ -1,7 +1,7 @@
 use inotify::*;
 use mio::net::TcpStream;
-use nix::sys::sendfile::sendfile;
 use nix;
+use nix::sys::sendfile::sendfile;
 use slab::*;
 use std::collections::hash_map::Entry;
 use std::fmt::{self, Debug};
@@ -45,7 +45,7 @@ impl WatcherPool {
             socks: Slab::new(),
             offsets: Map::new(),
             inotify: inotify,
-            inotify_buf: vec![0;4096],
+            inotify_buf: vec![0; 4096],
         }
     }
 
@@ -55,16 +55,17 @@ impl WatcherPool {
     /// The return value indicates whether this client has more work to do.
     pub fn handle_client(&mut self, cid: ClientId) -> Result<bool> {
         let ret = {
-            let (fid, ref mut offset) = *self.offsets.get_mut(&cid)
+            let (fid, ref mut offset) = *self
+                .offsets
+                .get_mut(&cid)
                 .ok_or(ErrorKind::ClientNotFound)?;
-            let (ref mut file, _) = *self.files.get_mut(&fid)
-                .ok_or(ErrorKind::FileNotWatched)?;
+            let (ref mut file, _) = *self.files.get_mut(&fid).ok_or(ErrorKind::FileNotWatched)?;
             let sock = self.socks.get_mut(cid).unwrap();
             update_client(file, sock, offset)
         };
         match ret {
-            Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::EPIPE)),_)) |
-            Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::ECONNRESET)),_)) => {
+            Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::EPIPE)), _))
+            | Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::ECONNRESET)), _)) => {
                 // The client hung up
                 self.deregister_client(cid)?;
                 Ok(false)
@@ -74,9 +75,7 @@ impl WatcherPool {
                 Ok(false)
             }
             Err(e) => bail!(e),
-            Ok((sent, wanted)) => {
-                Ok(wanted > sent as i64)
-            }
+            Ok((sent, wanted)) => Ok(wanted > sent as i64),
         }
     }
 
@@ -112,9 +111,17 @@ impl WatcherPool {
         Ok(dirty_clients)
     }
 
-    pub fn register_client(&mut self, cid: ClientId, path: &Path, offset: usize) -> Result<ClientId> {
+    pub fn register_client(
+        &mut self,
+        cid: ClientId,
+        path: &Path,
+        offset: usize,
+    ) -> Result<ClientId> {
         info!("Registering client {}", cid);
-        let fid = self.inotify.add_watch(&path, watch_mask::MODIFY | watch_mask::DELETE_SELF).unwrap();
+        let fid = self
+            .inotify
+            .add_watch(&path, watch_mask::MODIFY | watch_mask::DELETE_SELF)
+            .unwrap();
         self.offsets.insert(cid, (fid, offset as i64));
         match self.files.entry(fid) {
             Entry::Occupied(x) => {
@@ -138,7 +145,8 @@ impl WatcherPool {
         self.socks.remove(cid);
         let (fid, _) = self.offsets.remove(&cid).unwrap();
         let noones_interested = {
-            let (_, ref mut watchers) = *self.files.get_mut(&fid).ok_or(ErrorKind::FileNotWatched)?;
+            let (_, ref mut watchers) =
+                *self.files.get_mut(&fid).ok_or(ErrorKind::FileNotWatched)?;
             watchers.remove(&cid);
             watchers.is_empty()
         };
@@ -166,15 +174,25 @@ impl WatcherPool {
 /// If the client is unwritable, the function will return with 0.
 /// If the client has disconnected, the function will return with EPIPE.
 /// If the client is writeable and needed more than `CHUNK_SIZE`, the function will return
-fn update_client(file: &mut File, sock: &mut TcpStream, offset: &mut Offset) -> Result<(usize, i64)> {
+fn update_client(
+    file: &mut File,
+    sock: &mut TcpStream,
+    offset: &mut Offset,
+) -> Result<(usize, i64)> {
     let len = file.metadata()?.len();
-    let wanted = len as i64 - *offset;  // How many bytes the client wants
-    let cnt = match wanted {            // How many bytes the client will get
+    let wanted = len as i64 - *offset; // How many bytes the client wants
+    let cnt = match wanted {
+        // How many bytes the client will get
         x if x <= 0 => return Ok((0, wanted)),
-        x if x <= CHUNK_SIZE as i64=> x,
+        x if x <= CHUNK_SIZE as i64 => x,
         _ => CHUNK_SIZE as i64,
     };
     info!("Sending {} bytes from offset {}", cnt, offset);
-    let n = sendfile(sock.as_raw_fd(), file.as_raw_fd(), Some(offset), cnt as usize)?;
+    let n = sendfile(
+        sock.as_raw_fd(),
+        file.as_raw_fd(),
+        Some(offset),
+        cnt as usize,
+    )?;
     Ok((n, wanted))
 }
