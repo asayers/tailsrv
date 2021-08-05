@@ -11,24 +11,18 @@ edition = "2018"
 [dependencies]
 fs2 = "0.4.3"
 ignore = "0.4.18"
+inotify = "0.9.3"
 integer-encoding = { version = "3.0.2", optional = true }
 log = "0.4.14"
 loggerv = "0.7.2"
 memchr = "2.4.0"
 memmap = "0.7.0"
-mio = "0.6"
-mio-more = "0.1"
 nix = "0.22.0"
 nom = "3.2"
 same-file = "1.0.6"
-slab = "0.4.3"
 structopt = "0.3.22"
 thiserror = "1.0.26"
-
-[dependencies.inotify]
-branch = "master"
-features = ["mio"]
-git = "https://github.com/asayers/inotify-rs"
+tokio = { version = "1.9.0", features = ["full"] }
 
 [features]
 prefixed = ["integer-encoding"]

@@ -9,7 +9,8 @@ pub type Map<K, V> = HashMap<K, V, RandomState>;
 pub type Set<K> = HashSet<K, RandomState>;
 pub type FileId = WatchDescriptor;
 pub type ClientId = usize;
-pub type Offset = i64;
+pub type Offset = i64; /* bytes */
+pub type FileLength = u64; /* bytes */
 
 pub type Result<T> = std::result::Result<T, Error>;
 

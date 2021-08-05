@@ -1,15 +1,70 @@
 use crate::types::*;
 use inotify::*;
 use log::*;
-use mio::net::TcpStream;
-use nix::sys::sendfile::sendfile;
-use slab::*;
-use std::collections::hash_map::Entry;
+use std::convert::TryFrom;
 use std::fmt::{self, Debug};
 use std::fs::File;
-use std::iter::FromIterator;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
+use tokio::net::TcpStream;
+use tokio::sync::watch;
+
+pub async fn client_task(
+    sock: TcpStream,
+    initial_offset: Offset,
+    file: std::os::unix::io::RawFd,
+    mut file_len: watch::Receiver<FileLength>,
+) {
+    /// The maximum number of bytes which will be `sendfile()`'d to a client before moving onto the
+    /// next waiting client.
+    ///
+    /// A bigger size increases total throughput, but may allow a client who is reading a lot of data
+    /// to hurt reaction latency for other clients.
+    const CHUNK_SIZE: usize = 1024 * 1024;
+
+    let mut offset = initial_offset;
+    loop {
+        sock.writable().await.unwrap();
+        info!("Socket has become writable");
+        // How many bytes the client wants
+        let wanted = i64::try_from(*file_len.borrow()).unwrap() - offset;
+        if wanted <= 0 {
+            // We're all caught-up.  Wait for new data to be written
+            // to the file before continuing.
+            info!("Waiting for changes");
+            match file_len.changed().await {
+                Ok(()) => continue,
+                Err(_) => {
+                    // The sender is gone.  This means that the file has
+                    // been deleted.
+                    info!("Closing socket: file was deleted");
+                    return;
+                }
+            }
+        }
+        // How many bytes the client will get
+        let cnt = wanted.min(CHUNK_SIZE as i64);
+        info!("Sending {} bytes from offset {}", cnt, offset);
+        let ret = sock.try_io(tokio::io::Interest::WRITABLE, || {
+            nix::sys::sendfile::sendfile(sock.as_raw_fd(), file, Some(&mut offset), cnt as usize)
+                .map_err(std::io::Error::from)
+        });
+        if let Err(e) = ret {
+            match e.kind() {
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset => {
+                    // The client hung up
+                    info!("Socket closed by other side");
+                    return;
+                }
+                std::io::ErrorKind::WouldBlock => {
+                    // The socket is not writeable. Wait for it to become writable
+                    // again before continuing.
+                }
+                _ => panic!("{}", e),
+            }
+        }
+    }
+}
 
 /// Keeps track of which clients are interested in which files.
 ///
@@ -18,176 +73,60 @@ use std::path::Path;
 /// - A watched file was modified;
 /// - A client became writable;
 pub struct WatcherPool {
-    pub socks: Slab<TcpStream>,
-    files: Map<FileId, (File, Set<ClientId>)>,
-    offsets: Map<ClientId, (FileId, Offset)>,
-    inotify: Inotify,
-    inotify_buf: Vec<u8>,
+    files: Map<FileId, (File, watch::Sender<FileLength>, watch::Receiver<FileLength>)>,
+    pub inotify: Inotify,
+    buf: Vec<u8>,
 }
 
 impl Debug for WatcherPool {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        (&self.files, &self.offsets).fmt(f)
+        self.files.fmt(f)
     }
 }
 
-/// The maximum number of bytes which will be `sendfile()`'d to a client before moving onto the
-/// next waiting client.
-///
-/// A bigger size increases total throughput, but may allow a client who is reading a lot of data
-/// to hurt reaction latency for other clients.
-pub const CHUNK_SIZE: usize = 1024 * 1024;
-
 impl WatcherPool {
-    pub fn new(inotify: Inotify) -> WatcherPool {
+    pub fn new() -> WatcherPool {
         WatcherPool {
-            files: Map::new(),
-            socks: Slab::new(),
-            offsets: Map::new(),
-            inotify,
-            inotify_buf: vec![0; 4096],
+            files: Map::default(),
+            inotify: Inotify::init().unwrap(),
+            buf: vec![0; 4096],
         }
     }
 
-    /// Send data to the given client, sending up to `CHUNK_SIZE` bytes from the file it's
-    /// interested in.
-    ///
-    /// The return value indicates whether this client has more work to do.
-    pub fn handle_client(&mut self, cid: ClientId) -> Result<bool> {
-        let ret = {
-            let (fid, ref mut offset) = *self.offsets.get_mut(&cid).ok_or(Error::ClientNotFound)?;
-            let (ref mut file, _) = *self.files.get_mut(&fid).ok_or(Error::FileNotWatched)?;
-            let sock = self.socks.get_mut(cid).unwrap();
-            update_client(file, sock, offset)
-        };
-        match ret {
-            Err(Error::Nix(nix::Error::EPIPE)) | Err(Error::Nix(nix::Error::ECONNRESET)) => {
-                // The client hung up
-                self.deregister_client(cid)?;
-                Ok(false)
-            }
-            Err(Error::Nix(nix::Error::EAGAIN)) => {
-                // The socket is not writeable. Don't requeue.
-                Ok(false)
-            }
-            Err(e) => Err(e),
-            Ok((sent, wanted)) => Ok(wanted > sent as i64),
-        }
-    }
-
-    /// Check the inotify fd and mark appropriate clients as dirty
-    pub fn check_watches(&mut self) -> Result<Vec<ClientId>> {
-        // FIXME: ugly, inefficient implementation
-        let mut dirty_clients = vec![];
-        let mut modified_files = vec![];
-        let mut deleted_files = vec![];
-        {
-            let events = self.inotify.read_events_blocking(&mut self.inotify_buf)?;
-            for ev in events {
-                if ev.mask.contains(event_mask::MODIFY) {
-                    modified_files.push(ev.wd);
-                }
-                if ev.mask.contains(event_mask::DELETE_SELF) {
-                    deleted_files.push(ev.wd);
-                }
+    pub fn update_all(&mut self) -> Result<()> {
+        for ev in self.inotify.read_events(&mut self.buf).unwrap() {
+            if ev.mask.contains(EventMask::DELETE_SELF) || ev.mask.contains(EventMask::MOVE_SELF) {
+                info!("Deregistering file {:?}", ev.wd);
+                self.files.remove(&ev.wd).ok_or(Error::FileNotWatched)?;
+                self.inotify.rm_watch(ev.wd).unwrap(); // TODO: does this happen automatically?
+            } else if ev.mask.contains(EventMask::MODIFY) {
+                let (file, tx, _) = self.files.get(&ev.wd).ok_or(Error::FileNotWatched)?;
+                let file_len = file.metadata()?.len();
+                info!("{:?}: File length is now {}", ev.wd, file_len);
+                tx.send(file_len).unwrap();
             }
         }
-        for fid in modified_files {
-            // Mark all the given file's watchers as dirty.
-            debug!("File {:?} marked as dirty", fid);
-            let (_, ref watchers) = *self.files.get(&fid).ok_or(Error::FileNotWatched)?;
-            for &cid in watchers {
-                debug!("Client {} marked as dirty", cid);
-                dirty_clients.push(cid);
-            }
-        }
-        for fid in deleted_files {
-            self.deregister_file(fid)?;
-        }
-        Ok(dirty_clients)
+        Ok(())
     }
 
     pub fn register_client(
         &mut self,
-        cid: ClientId,
         path: &Path,
-        offset: usize,
-    ) -> Result<ClientId> {
-        info!("Registering client {}", cid);
+    ) -> Result<(std::os::unix::io::RawFd, watch::Receiver<FileLength>)> {
+        info!("Registering client");
         let fid = self
             .inotify
-            .add_watch(&path, watch_mask::MODIFY | watch_mask::DELETE_SELF)
+            .add_watch(
+                &path,
+                WatchMask::MODIFY | WatchMask::DELETE_SELF | WatchMask::MOVE_SELF,
+            )
             .unwrap();
-        self.offsets.insert(cid, (fid, offset as i64));
-        match self.files.entry(fid) {
-            Entry::Occupied(x) => {
-                let (_, ref mut watchers) = *x.into_mut();
-                watchers.insert(cid);
-            }
-            Entry::Vacant(x) => {
-                let file = File::open(path)?;
-                let watchers = Set::from_iter(vec![cid]);
-                x.insert((file, watchers));
-            }
-        }
-        Ok(cid)
+        let (file, _, rx) = self.files.entry(fid).or_insert_with(|| {
+            let file = File::open(path).unwrap();
+            let file_len = file.metadata().unwrap().len();
+            let (tx, rx) = watch::channel(file_len);
+            (file, tx, rx)
+        });
+        Ok((file.as_raw_fd(), rx.clone()))
     }
-
-    /// HUPs the sock, dereg's the file if empty.
-    // FIXME: I guess we should remove epoll watch (although once the socket HUPs, it probably gets
-    // removed automatically, right?)
-    fn deregister_client(&mut self, cid: ClientId) -> Result<()> {
-        info!("Deregistering client {}", cid);
-        self.socks.remove(cid);
-        let (fid, _) = self.offsets.remove(&cid).unwrap();
-        let noones_interested = {
-            let (_, ref mut watchers) = *self.files.get_mut(&fid).ok_or(Error::FileNotWatched)?;
-            watchers.remove(&cid);
-            watchers.is_empty()
-        };
-        if noones_interested {
-            self.deregister_file(fid)?;
-        }
-        Ok(())
-    }
-
-    /// Closes the file, dereg's all clients.
-    fn deregister_file(&mut self, fid: FileId) -> Result<()> {
-        info!("Deregistering file {:?}", fid);
-        let (_, watchers) = self.files.remove(&fid).ok_or(Error::FileNotWatched)?;
-        for cid in watchers {
-            self.offsets.remove(&cid);
-        }
-        self.inotify.rm_watch(fid)?;
-        Ok(())
-    }
-}
-
-/// Send up to `CHUNK_SIZE` bytes from the given file to the given sock, updating its offset.
-///
-/// If the client is up-to-date, the function will return with 0.
-/// If the client is unwritable, the function will return with 0.
-/// If the client has disconnected, the function will return with EPIPE.
-/// If the client is writeable and needed more than `CHUNK_SIZE`, the function will return
-fn update_client(
-    file: &mut File,
-    sock: &mut TcpStream,
-    offset: &mut Offset,
-) -> Result<(usize, i64)> {
-    let len = file.metadata()?.len();
-    let wanted = len as i64 - *offset; // How many bytes the client wants
-    let cnt = match wanted {
-        // How many bytes the client will get
-        x if x <= 0 => return Ok((0, wanted)),
-        x if x <= CHUNK_SIZE as i64 => x,
-        _ => CHUNK_SIZE as i64,
-    };
-    info!("Sending {} bytes from offset {}", cnt, offset);
-    let n = sendfile(
-        sock.as_raw_fd(),
-        file.as_raw_fd(),
-        Some(offset),
-        cnt as usize,
-    )?;
-    Ok((n, wanted))
 }

@@ -1,0 +1,2 @@
+* [ ] Deleting files doesn't close sockets for some reason
+* [ ] Closing connections doesn't remove the inotify watch yet

@@ -8,18 +8,18 @@ use crate::file_list::*;
 use crate::header::*;
 use crate::index::*;
 use crate::pool::*;
-use inotify::*;
 use log::*;
-use mio_more::channel as mio_chan;
-use std::env::*;
-use std::fs::File;
-use std::io::prelude::*;
-use std::io::{BufRead, BufReader};
-use std::net::{SocketAddr, TcpStream};
-use std::path::PathBuf;
-use std::thread;
-use std::usize;
+use std::os::unix::io::AsRawFd;
+use std::{
+    convert::TryFrom,
+    env::*,
+    fs::File,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 use structopt::StructOpt;
+use tokio::io::{unix::AsyncFd, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 
 #[derive(StructOpt)]
 struct Opts {
@@ -34,7 +34,8 @@ struct Opts {
     quiet: bool,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Define CLI options
     let opts = Opts::from_args();
 
@@ -50,149 +51,64 @@ fn main() {
         warn!("Index files are not implemented yet");
     }
 
-    // Init epoll, allocate buffer for epoll events
-    // const MAX_CLIENTS: usize  = 1024;
-    const EPOLL_LISTENER: mio::Token = mio::Token(usize::MAX - 1);
-    const EPOLL_NEW_CLIENT: mio::Token = mio::Token(usize::MAX - 2);
-    const EPOLL_INOTIFY: mio::Token = mio::Token(usize::MAX - 3);
-    const EPOLL_WORK: mio::Token = mio::Token(usize::MAX - 4);
-    let poll = mio::Poll::new().unwrap();
-    let mut mio_events = mio::Events::with_capacity(1024);
+    let pool = Arc::new(Mutex::new(WatcherPool::new()));
 
-    // Init inotify and register the inotify fd with epoll
-    let inotify = Inotify::init().unwrap();
-    poll.register(
-        &inotify,
-        EPOLL_INOTIFY,
-        mio::Ready::readable(),
-        mio::PollOpt::level(),
-    )
-    .unwrap();
+    {
+        // Start the file-watching task
+        let pool = pool.clone();
+        let inotify_fd = AsyncFd::new(pool.lock().unwrap().inotify.as_raw_fd()).unwrap();
+        tokio::task::spawn(async move {
+            loop {
+                let mut guard = inotify_fd.readable().await.unwrap();
+                pool.lock().unwrap().update_all().unwrap();
+                guard.clear_ready();
+            }
+        });
+    }
 
-    // Bind the listen socket and register it with epoll
-    let inaddr_any = "0.0.0.0".parse().unwrap();
-    let listen_addr = SocketAddr::new(inaddr_any, opts.port);
-    let listener = mio::net::TcpListener::bind(&listen_addr).expect("Bind listen sock");
-    poll.register(
-        &listener,
-        EPOLL_LISTENER,
-        mio::Ready::readable(),
-        mio::PollOpt::level(),
-    )
-    .unwrap();
-
-    let (new_clients_tx, new_clients_rx) = mio_chan::channel();
-    poll.register(
-        &new_clients_rx,
-        EPOLL_NEW_CLIENT,
-        mio::Ready::readable(),
-        mio::PollOpt::level(),
-    )
-    .unwrap();
-
-    let (work_tx, work_rx) = mio_chan::channel();
-    poll.register(
-        &work_rx,
-        EPOLL_WORK,
-        mio::Ready::readable(),
-        mio::PollOpt::level(),
-    )
-    .unwrap();
-
-    // If the client sends a "stream" header, it is then moved to the pool, which tracks which
-    // clients are interested in which files.
-    let mut pool = WatcherPool::new(inotify);
-
-    // Enter runloop
+    let listen_addr = SocketAddr::new([0, 0, 0, 0].into(), opts.port);
+    let listener = tokio::net::TcpListener::bind(&listen_addr)
+        .await
+        .expect("Bind listen sock");
     info!(
-        "Serving files from {:?} on {}",
-        current_dir().unwrap(),
+        "Serving files from {} on {}",
+        current_dir().unwrap().display(),
         listen_addr
     );
     loop {
-        // Wait for something to happen
-        poll.poll(&mut mio_events, None).unwrap();
-        for mio_event in mio_events.iter() {
-            match mio_event.token() {
-                EPOLL_LISTENER => {
-                    // The listen socket is readable => a new client is trying to connect
-                    let (sock, _) = listener.accept_std().unwrap();
-                    info!("Client connected. Waiting for it to send a header...");
-                    // The first thing the client will do is send a header
-                    let new_clients_tx = new_clients_tx.clone();
-                    thread::spawn(move || foobar(sock, new_clients_tx));
-                }
-                EPOLL_NEW_CLIENT => {
-                    let (sock, path, offset) = new_clients_rx.try_recv().unwrap();
-                    let cid = {
-                        let entry = pool.socks.vacant_entry();
-                        let cid = entry.key();
-                        let sock = mio::net::TcpStream::from_stream(sock).unwrap();
-                        poll.register(
-                            &sock,
-                            mio::Token(cid),
-                            mio::Ready::writable(),
-                            mio::PollOpt::edge(),
-                        )
-                        .unwrap();
-                        entry.insert(sock);
-                        cid
-                    };
-                    // And then we put it in the pool. This function also
-                    // handles setting up inotify watches etc.
-                    pool.register_client(cid, &path, offset).unwrap();
-                }
-                EPOLL_WORK => {
-                    let cid = work_rx.try_recv().unwrap();
-                    let requeue = pool.handle_client(cid).unwrap();
-                    if requeue {
-                        work_tx.send(cid).unwrap();
-                    }
-                }
-                EPOLL_INOTIFY => {
-                    // The inotify FD is readable => a watched file has been modified
-                    info!("Watched files have been modified");
-                    // First, mark all clients interested in modifed files as dirty.
-                    for cid in pool.check_watches().unwrap() {
-                        work_tx.send(cid).unwrap();
-                    }
-                }
-                mio::Token(cid) => {
-                    if mio_event.readiness().is_writable() {
-                        // A client in the pool has become writable => send some data
-                        info!("Client {} has become writable", cid);
-                        work_tx.send(cid).unwrap();
-                    }
-                }
-            }
-        }
+        let (sock, addr) = listener.accept().await.unwrap();
+        info!("{}: New client connected", addr);
+        tokio::task::spawn(new_client(sock, pool.clone()));
     }
 }
 
-fn foobar(sock: TcpStream, chan: mio_chan::Sender<(TcpStream, PathBuf, usize)>) {
-    let mut buf = String::new();
-    let mut sock = BufReader::new(sock);
-    // TODO: timeout
-    // TODO: length limit
-    sock.read_line(&mut buf).unwrap();
-    debug!("Client sent header: {:?}", &buf);
-    let hdr = match header(buf.as_bytes()) {
-        nom::IResult::Done(_, x) => x,
-        nom::IResult::Error(e) => {
-            error!("Bad header: {}", buf);
-            panic!("{}", e);
-        }
-        nom::IResult::Incomplete { .. } => {
-            error!("Partial header: {}", buf);
-            panic!();
+async fn new_client(mut sock: TcpStream, pool: Arc<Mutex<WatcherPool>>) {
+    // The first thing the client will do is send a header
+    let hdr = {
+        // TODO: timeout
+        // TODO: length limit
+        let mut buf = String::new();
+        BufReader::new(&mut sock).read_line(&mut buf).await.unwrap();
+        debug!("Client sent header: {:?}", &buf);
+        match header(buf.as_bytes()) {
+            nom::IResult::Done(_, x) => x,
+            nom::IResult::Error(e) => {
+                error!("Bad header: {}", buf);
+                panic!("{}", e);
+            }
+            nom::IResult::Incomplete { .. } => {
+                error!("Partial header: {}", buf);
+                panic!();
+            }
         }
     };
     info!("Client sent header {:?}", hdr);
-    let mut sock = sock.into_inner();
     match hdr {
         Header::List => {
             // Listing files could be expensive, let's do it in this thread.
-            sock.write_all(list_files().unwrap().as_bytes()).unwrap();
+            sock.write_all(list_files().unwrap().as_bytes())
+                .await
+                .unwrap();
         }
         Header::Stream { path, index } => {
             if file_is_valid(&path) {
@@ -201,14 +117,17 @@ fn foobar(sock: TcpStream, chan: mio_chan::Sender<(TcpStream, PathBuf, usize)>) 
                 // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
                 let mut file = File::open(&path).unwrap();
                 let offset = resolve_index(&mut file, index).expect("index").unwrap();
-                chan.send((sock, path, offset)).unwrap();
+                let offset = i64::try_from(offset).unwrap();
+                let (file, rx) = pool.lock().unwrap().register_client(&path).unwrap();
+                // This is long-running:
+                client_task(sock, offset, file, rx).await;
             } else {
                 warn!("Client tried to access {:?} but isn't allowed", path);
             }
         }
         Header::Stats => {
             if sock.peer_addr().unwrap().ip().is_loopback() {
-                writeln!(sock, "TODO").unwrap();
+                sock.write_all(b"TODO\n").await.unwrap();
             } else {
                 warn!("Client requested stats but isn't localhost");
             }
