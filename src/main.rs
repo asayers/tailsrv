@@ -192,7 +192,7 @@ fn foobar(sock: TcpStream, chan: mio_chan::Sender<(TcpStream, PathBuf, usize)>) 
     match hdr {
         Header::List => {
             // Listing files could be expensive, let's do it in this thread.
-            sock.write(list_files().unwrap().as_bytes()).unwrap();
+            sock.write_all(list_files().unwrap().as_bytes()).unwrap();
         }
         Header::Stream { path, index } => {
             if file_is_valid(&path) {
