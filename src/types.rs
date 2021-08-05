@@ -15,14 +15,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("Noone's interested")]
-    NoonesInterested,
-    #[error("Already connected")]
-    AlreadyConnected,
     #[error("Client not found")]
     ClientNotFound,
-    #[error("Illegal file")]
-    IllegalFile,
     #[error("File not watched")]
     FileNotWatched,
     #[error("Line-prefixed support not enabled")]
@@ -31,10 +25,6 @@ pub enum Error {
     Io(#[from] io::Error),
     #[error("{0}")]
     Nix(#[from] nix::Error),
-    #[error("{0}")]
-    Nom(#[from] nom::ErrorKind),
-    #[error("{0}")]
-    Ignore(#[from] ignore::Error),
     #[error("{0}")]
     Fmt(#[from] fmt::Error),
 }
