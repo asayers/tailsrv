@@ -92,7 +92,8 @@ indexing schemes:
   is greater than the number of blobs in the file, tailsrv just starts
   streaming from the end (FIXME).  *This indexing strategy only makes sense
   with files which are a concatenation of length-prefixed blobs, where the
-  length is encoded as a [base128 varint].*
+  length is encoded as a [base128 varint].* Note: you need to compile with
+  the "prefixed" feature enabled.
 
 [base128 varint]: https://developers.google.com/protocol-buffers/docs/encoding#varints
 

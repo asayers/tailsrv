@@ -25,6 +25,8 @@ pub enum Error {
     IllegalFile,
     #[error("File not watched")]
     FileNotWatched,
+    #[error("Line-prefixed support not enabled")]
+    PrefixedNotEnabled,
     #[error("{0}")]
     Io(#[from] io::Error),
     #[error("{0}")]
