@@ -10,7 +10,6 @@ edition = "2018"
 
 [dependencies]
 clap = "2.27"
-error-chain = "0.11"
 fs2 = "0.4"
 ignore = "0.3"
 integer-encoding = "1.0"
@@ -24,6 +23,7 @@ nix = "0.9"
 nom = "3.2"
 same-file = "1.0"
 slab = "0.4"
+thiserror = "1.0.26"
 
 [dependencies.inotify]
 branch = "master"

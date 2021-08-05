@@ -1,5 +1,4 @@
 use crate::types::*;
-use error_chain::*;
 use inotify::*;
 use log::*;
 use mio::net::TcpStream;
@@ -56,26 +55,23 @@ impl WatcherPool {
     /// The return value indicates whether this client has more work to do.
     pub fn handle_client(&mut self, cid: ClientId) -> Result<bool> {
         let ret = {
-            let (fid, ref mut offset) = *self
-                .offsets
-                .get_mut(&cid)
-                .ok_or(ErrorKind::ClientNotFound)?;
-            let (ref mut file, _) = *self.files.get_mut(&fid).ok_or(ErrorKind::FileNotWatched)?;
+            let (fid, ref mut offset) = *self.offsets.get_mut(&cid).ok_or(Error::ClientNotFound)?;
+            let (ref mut file, _) = *self.files.get_mut(&fid).ok_or(Error::FileNotWatched)?;
             let sock = self.socks.get_mut(cid).unwrap();
             update_client(file, sock, offset)
         };
         match ret {
-            Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::EPIPE)), _))
-            | Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::ECONNRESET)), _)) => {
+            Err(Error::Nix(nix::Error::Sys(nix::Errno::EPIPE)))
+            | Err(Error::Nix(nix::Error::Sys(nix::Errno::ECONNRESET))) => {
                 // The client hung up
                 self.deregister_client(cid)?;
                 Ok(false)
             }
-            Err(Error(ErrorKind::Nix(nix::Error::Sys(nix::Errno::EAGAIN)), _)) => {
+            Err(Error::Nix(nix::Error::Sys(nix::Errno::EAGAIN))) => {
                 // The socket is not writeable. Don't requeue.
                 Ok(false)
             }
-            Err(e) => bail!(e),
+            Err(e) => return Err(e),
             Ok((sent, wanted)) => Ok(wanted > sent as i64),
         }
     }
@@ -100,7 +96,7 @@ impl WatcherPool {
         for fid in modified_files {
             // Mark all the given file's watchers as dirty.
             debug!("File {:?} marked as dirty", fid);
-            let (_, ref watchers) = *self.files.get(&fid).ok_or(ErrorKind::FileNotWatched)?;
+            let (_, ref watchers) = *self.files.get(&fid).ok_or(Error::FileNotWatched)?;
             for &cid in watchers {
                 debug!("Client {} marked as dirty", cid);
                 dirty_clients.push(cid);
@@ -146,8 +142,7 @@ impl WatcherPool {
         self.socks.remove(cid);
         let (fid, _) = self.offsets.remove(&cid).unwrap();
         let noones_interested = {
-            let (_, ref mut watchers) =
-                *self.files.get_mut(&fid).ok_or(ErrorKind::FileNotWatched)?;
+            let (_, ref mut watchers) = *self.files.get_mut(&fid).ok_or(Error::FileNotWatched)?;
             watchers.remove(&cid);
             watchers.is_empty()
         };
@@ -160,7 +155,7 @@ impl WatcherPool {
     /// Closes the file, dereg's all clients.
     fn deregister_file(&mut self, fid: FileId) -> Result<()> {
         info!("Deregistering file {:?}", fid);
-        let (_, watchers) = self.files.remove(&fid).ok_or(ErrorKind::FileNotWatched)?;
+        let (_, watchers) = self.files.remove(&fid).ok_or(Error::FileNotWatched)?;
         for cid in watchers {
             self.offsets.remove(&cid);
         }
