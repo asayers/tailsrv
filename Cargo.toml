@@ -1,9 +1,11 @@
 [package]
-authors = ["Alex Sayers <alex.sayers@gmail.com>"]
 name = "tailsrv"
 version = "0.3.0"
+description = "A high-performance file-streaming server"
 readme = "README.md"
+repository = "https://git.sr.ht/~asayers/tailsrv"
 license = "Unlicense"
+authors = ["Alex Sayers <alex.sayers@gmail.com>"]
 
 [dependencies]
 clap = "2.27"
