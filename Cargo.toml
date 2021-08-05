@@ -9,7 +9,6 @@ authors = ["Alex Sayers <alex.sayers@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-clap = "2.27"
 fs2 = "0.4"
 ignore = "0.3"
 integer-encoding = "1.0"
@@ -24,6 +23,7 @@ nom = "3.2"
 same-file = "1.0"
 slab = "0.4"
 thiserror = "1.0.26"
+structopt = "0.3.22"
 
 [dependencies.inotify]
 branch = "master"

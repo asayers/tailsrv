@@ -8,7 +8,6 @@ use crate::file_list::*;
 use crate::header::*;
 use crate::index::*;
 use crate::pool::*;
-use clap::App;
 use inotify::*;
 use log::*;
 use mio_more::channel as mio_chan;
@@ -20,28 +19,34 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::thread;
 use std::usize;
+use structopt::StructOpt;
+
+#[derive(StructOpt)]
+struct Opts {
+    /// The port number on which to listen for new connections
+    #[structopt(long, short)]
+    port: u16,
+    /// Lazily maintain index files in /tmp for faster seeking
+    #[structopt(long, short)]
+    index: bool,
+    /// Don't produce output unless there's a problem
+    #[structopt(long, short)]
+    quiet: bool,
+}
 
 fn main() {
     // Define CLI options
-    let args = App::new("tailsrv")
-        .version("0.3")
-        .about("A server which allows clients to tail files in the working directory")
-        .args_from_usage(
-            "-p --port=<port> 'The port number on which to listen for new connections'
-             -i --index       'Lazily maintain index files in /tmp for faster seeking'
-             -q --quiet       'Don't produce output unless there's a problem'",
-        )
-        .get_matches();
+    let opts = Opts::from_args();
 
     // Init logger
-    let log_level = if args.is_present("quiet") {
+    let log_level = if opts.quiet {
         LogLevel::Warn
     } else {
         LogLevel::Info
     };
     loggerv::init_with_level(log_level).unwrap();
 
-    if args.is_present("index") {
+    if opts.index {
         warn!("Index files are not implemented yet");
     }
 
@@ -66,8 +71,7 @@ fn main() {
 
     // Bind the listen socket and register it with epoll
     let inaddr_any = "0.0.0.0".parse().unwrap();
-    let port = args.value_of("port").unwrap().parse().unwrap();
-    let listen_addr = SocketAddr::new(inaddr_any, port);
+    let listen_addr = SocketAddr::new(inaddr_any, opts.port);
     let listener = mio::net::TcpListener::bind(&listen_addr).expect("Bind listen sock");
     poll.register(
         &listener,
