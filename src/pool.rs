@@ -1,6 +1,8 @@
+use crate::types::*;
+use error_chain::*;
 use inotify::*;
+use log::*;
 use mio::net::TcpStream;
-use nix;
 use nix::sys::sendfile::sendfile;
 use slab::*;
 use std::collections::hash_map::Entry;
@@ -9,7 +11,6 @@ use std::fs::File;
 use std::iter::FromIterator;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
-use types::*;
 
 /// Keeps track of which clients are interested in which files.
 ///

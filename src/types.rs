@@ -1,11 +1,9 @@
-use ignore;
+use error_chain::*;
 use inotify::WatchDescriptor;
-use nix;
-use nom;
-use std::collections::hash_map::*;
-use std::collections::hash_set::*;
-use std::fmt;
-use std::io;
+use std::{
+    collections::{hash_map::*, hash_set::*},
+    fmt, io,
+};
 
 pub type Map<K, V> = HashMap<K, V, RandomState>;
 pub type Set<K> = HashSet<K, RandomState>;

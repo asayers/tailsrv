@@ -1,11 +1,11 @@
+mod line;
+mod prefixed;
+
+use self::line::*;
+use self::prefixed::*;
+use crate::types::*;
 use std::fs::File;
 use std::ops::Neg;
-use types::*;
-
-mod line;
-use self::line::*;
-mod prefixed;
-use self::prefixed::*;
 
 #[derive(Debug)]
 pub enum Index {

@@ -1,8 +1,9 @@
+use crate::types::*;
 use ignore::{Walk, WalkBuilder};
+use log::*;
 use same_file::*;
 use std::fmt::Write;
 use std::path::*;
-use types::*;
 
 // TODO: Sort
 fn valid_files() -> Walk {

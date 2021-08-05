@@ -1,26 +1,16 @@
-extern crate clap;
-#[macro_use]
-extern crate error_chain;
-extern crate fs2;
-extern crate ignore;
-extern crate inotify;
-extern crate integer_encoding;
-#[macro_use]
-extern crate log;
-extern crate loggerv;
-extern crate memchr;
-extern crate memmap;
-extern crate mio;
-extern crate mio_more;
-extern crate nix;
-#[macro_use]
-extern crate nom;
-extern crate same_file;
-extern crate slab;
+pub mod file_list;
+pub mod header;
+pub mod index;
+pub mod pool;
+pub mod types;
 
+use crate::file_list::*;
+use crate::header::*;
+use crate::index::*;
+use crate::pool::*;
 use clap::App;
 use inotify::*;
-use log::LogLevel;
+use log::*;
 use mio_more::channel as mio_chan;
 use std::env::*;
 use std::fs::File;
@@ -30,16 +20,6 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::thread;
 use std::usize;
-
-pub mod file_list;
-use file_list::*;
-pub mod header;
-use header::*;
-pub mod index;
-use index::*;
-pub mod pool;
-use pool::*;
-pub mod types;
 
 fn main() {
     // Define CLI options
@@ -196,7 +176,7 @@ fn foobar(sock: TcpStream, chan: mio_chan::Sender<(TcpStream, PathBuf, usize)>) 
         nom::IResult::Done(_, x) => x,
         nom::IResult::Error(e) => {
             error!("Bad header: {}", buf);
-            panic!(e);
+            panic!("{}", e);
         }
         nom::IResult::Incomplete { .. } => {
             error!("Partial header: {}", buf);

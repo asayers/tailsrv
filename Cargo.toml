@@ -6,6 +6,7 @@ readme = "README.md"
 repository = "https://git.sr.ht/~asayers/tailsrv"
 license = "Unlicense"
 authors = ["Alex Sayers <alex.sayers@gmail.com>"]
+edition = "2018"
 
 [dependencies]
 clap = "2.27"

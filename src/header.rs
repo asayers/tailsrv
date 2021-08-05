@@ -1,7 +1,6 @@
-use index::*;
-use nom;
-use std::path::*;
-use std::str;
+use crate::index::*;
+use nom::*;
+use std::{path::*, str};
 
 #[derive(Debug)]
 pub enum Header {
