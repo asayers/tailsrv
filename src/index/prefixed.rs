@@ -9,7 +9,7 @@ pub fn seqbyte(file: &File, seqno: usize) -> Option<usize> {
     let mmap = unsafe { Mmap::map(file).unwrap() };
     let mut byte = 0;
     for _ in 0..seqno {
-        let (len, n) = usize::decode_var(&mmap[byte..]);
+        let (len, n) = usize::decode_var(&mmap[byte..]).unwrap();
         byte += len + n;
     }
     Some(byte)

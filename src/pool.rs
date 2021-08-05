@@ -61,13 +61,12 @@ impl WatcherPool {
             update_client(file, sock, offset)
         };
         match ret {
-            Err(Error::Nix(nix::Error::Sys(nix::Errno::EPIPE)))
-            | Err(Error::Nix(nix::Error::Sys(nix::Errno::ECONNRESET))) => {
+            Err(Error::Nix(nix::Error::EPIPE)) | Err(Error::Nix(nix::Error::ECONNRESET)) => {
                 // The client hung up
                 self.deregister_client(cid)?;
                 Ok(false)
             }
-            Err(Error::Nix(nix::Error::Sys(nix::Errno::EAGAIN))) => {
+            Err(Error::Nix(nix::Error::EAGAIN)) => {
                 // The socket is not writeable. Don't requeue.
                 Ok(false)
             }

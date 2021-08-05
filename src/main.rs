@@ -40,9 +40,9 @@ fn main() {
 
     // Init logger
     let log_level = if opts.quiet {
-        LogLevel::Warn
+        log::Level::Warn
     } else {
-        LogLevel::Info
+        log::Level::Info
     };
     loggerv::init_with_level(log_level).unwrap();
 
