@@ -1,4 +1,3 @@
-pub mod header;
 pub mod index;
 
 use crate::index::*;
@@ -121,7 +120,7 @@ async fn handle_client(
         let mut buf = String::new();
         BufReader::new(&mut sock).read_line(&mut buf).await.unwrap();
         debug!("Client sent header: {:?}", &buf);
-        match crate::header::index(buf.as_bytes()) {
+        match parse_index(buf.as_bytes()) {
             nom::IResult::Done(_, x) => x,
             nom::IResult::Error(e) => {
                 error!("Bad header: {}", buf);
