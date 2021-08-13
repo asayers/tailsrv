@@ -1,16 +1,19 @@
-pub mod file_list;
 pub mod header;
 pub mod index;
 pub mod types;
 
-use crate::file_list::*;
 use crate::index::*;
 use crate::types::*;
 use inotify::*;
 use log::*;
-use std::os::unix::io::AsRawFd;
-use std::os::unix::prelude::RawFd;
-use std::{convert::TryFrom, env::*, fs::File, net::SocketAddr, path::PathBuf};
+use std::{
+    convert::TryFrom,
+    env::*,
+    fs::File,
+    net::SocketAddr,
+    os::unix::{io::AsRawFd, prelude::RawFd},
+    path::{Path, PathBuf},
+};
 use structopt::StructOpt;
 use tokio::io::{unix::AsyncFd, AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;
@@ -187,4 +190,32 @@ async fn handle_client(
             }
         }
     }
+}
+
+pub fn file_is_valid(path: &Path) -> bool {
+    use ignore::WalkBuilder;
+    use same_file::*;
+    let valid_files = WalkBuilder::new(".")
+        .git_global(false) // Parsing git-related files is surprising
+        .git_ignore(false) // behaviour in the context of tailsrv, so
+        .git_exclude(false) // let's not read those files.
+        .ignore(true) // However, we *should* read generic ".ignore" files...
+        .hidden(true) // and ignore dotfiles (so clients can't read the .ignore files)
+        .parents(false) // Don't search the parent directory for .ignore files.
+        .build();
+    for entry in valid_files {
+        let entry = match entry {
+            Err(e) => {
+                warn!("{}", e);
+                continue;
+            }
+            Ok(entry) => entry,
+        };
+        if entry.file_type().map(|x| x.is_file()).unwrap_or(false)
+            && is_same_file(path, entry.path()).unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
 }
