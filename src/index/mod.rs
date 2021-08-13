@@ -5,6 +5,7 @@ mod prefixed;
 use self::line::*;
 #[cfg(feature = "prefixed")]
 use self::prefixed::*;
+use log::*;
 use std::{fs::File, ops::Neg, str::FromStr};
 use thiserror::*;
 
@@ -22,23 +23,16 @@ pub enum Index {
 impl FromStr for Index {
     type Err = Error;
     fn from_str(s: &str) -> Result<Index> {
-        let mut tokens = s.split(' ');
-        match tokens.next() {
-            None => Ok(Index::Start),
-            Some("start") => Ok(Index::Start),
-            Some("end") => Ok(Index::End),
-            Some("byte") => Ok(Index::Byte(
-                tokens.next().ok_or(Error::NotEnoughTokens)?.parse()?,
-            )),
-            Some("line") => Ok(Index::Line(
-                tokens.next().ok_or(Error::NotEnoughTokens)?.parse()?,
-            )),
-            Some("zero") => Ok(Index::Zero(
-                tokens.next().ok_or(Error::NotEnoughTokens)?.parse()?,
-            )),
-            Some("seqnum") => Ok(Index::SeqNum(
-                tokens.next().ok_or(Error::NotEnoughTokens)?.parse()?,
-            )),
+        info!("Parsing {}", s);
+        let mut tokens = s.split(' ').map(|x| x.trim());
+        let mut token = || tokens.next().ok_or(Error::NotEnoughTokens);
+        match token()? {
+            "" | "start" => Ok(Index::Start),
+            "end" => Ok(Index::End),
+            "byte" => Ok(Index::Byte(token()?.parse()?)),
+            "line" => Ok(Index::Line(token()?.parse()?)),
+            "zero" => Ok(Index::Zero(token()?.parse()?)),
+            "seqnum" => Ok(Index::SeqNum(token()?.parse()?)),
             _ => Err(Error::UnknownIndex),
         }
     }
