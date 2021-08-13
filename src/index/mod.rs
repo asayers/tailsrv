@@ -5,9 +5,10 @@ mod prefixed;
 use self::line::*;
 #[cfg(feature = "prefixed")]
 use self::prefixed::*;
-use crate::types::*;
 use std::fs::File;
 use std::ops::Neg;
+use std::{fmt, io};
+use thiserror::*;
 
 #[derive(Debug)]
 pub enum Index {
@@ -36,4 +37,22 @@ pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
         Index::Start => Some(0),
         Index::End => Some(file.metadata()?.len() as usize),
     })
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("Client not found")]
+    ClientNotFound,
+    #[error("File not watched")]
+    FileNotWatched,
+    #[error("Line-prefixed support not enabled")]
+    PrefixedNotEnabled,
+    #[error("{0}")]
+    Io(#[from] io::Error),
+    #[error("{0}")]
+    Nix(#[from] nix::Error),
+    #[error("{0}")]
+    Fmt(#[from] fmt::Error),
 }

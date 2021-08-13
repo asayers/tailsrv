@@ -1,9 +1,7 @@
 pub mod header;
 pub mod index;
-pub mod types;
 
 use crate::index::*;
-use crate::types::*;
 use inotify::*;
 use log::*;
 use std::{
@@ -18,6 +16,8 @@ use structopt::StructOpt;
 use tokio::io::{unix::AsyncFd, AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
+
+pub type FileLength = u64; /* bytes */
 
 #[derive(StructOpt)]
 struct Opts {
