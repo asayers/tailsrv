@@ -2,33 +2,6 @@ use crate::index::*;
 use nom::*;
 use std::{path::*, str};
 
-#[derive(Debug)]
-pub enum Header {
-    List,
-    Stream { path: PathBuf, index: Index },
-    Stats,
-}
-
-// TODO: Unit tests
-named!(pub header<Header>, alt!(list_header | stream_header | stats_header));
-named!(
-    list_header<Header>,
-    do_parse!(tag!("list") >> (Header::List))
-);
-named!(
-    stats_header<Header>,
-    do_parse!(tag!("stats") >> (Header::Stats))
-);
-named!(
-    stream_header<Header>,
-    do_parse!(
-        tag!("stream ")
-            >> path: path
-            >> tag!(" from ")
-            >> index: index
-            >> (Header::Stream { path, index })
-    )
-);
 named!(
     path<PathBuf>,
     map!(take_until!(" "), |x| Path::new(str::from_utf8(x).unwrap())
@@ -37,7 +10,7 @@ named!(
 
 // TODO: Unit tests
 named!(
-    index<Index>,
+    pub index<Index>,
     alt!(byte_idx | line_idx | seqnum_idx | start_idx | end_idx)
 );
 named!(

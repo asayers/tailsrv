@@ -55,16 +55,13 @@ and then start reading data, hanging up when they're done.  The grammar for the
 headers is:
 
 ```
-HEADER := list [dir] | stream <file> [from <INDEX>]
-INDEX  := start | end | byte <n> | line <n> | seqnum <n>
+INDEX := start | end | byte <n> | line <n> | seqnum <n>
 ```
 
-`dir` and `file` are paths which may optionally begin with a '/' character
-(TODO).
+Fields labeled as `<n>` are parsed as signed integers.
 
-Fields labeled as `<n>` are parsed as signed integers.  If the value is
-negative, it is interpreted as meaning "counting back from the end of the file"
-(TODO).
+(TODO: If the value is negative, it is interpreted as meaning "counting back
+from the end of the file".)
 
 If the watched file is deleted or moved, tailsrv will terminate the connection.
 This is the only (non-error) condition in which tailsrv will end a stream.

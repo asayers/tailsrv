@@ -5,7 +5,6 @@ pub mod pool;
 pub mod types;
 
 use crate::file_list::*;
-use crate::header::*;
 use crate::index::*;
 use crate::pool::*;
 use crate::types::*;
@@ -15,7 +14,7 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::prelude::RawFd;
 use std::{convert::TryFrom, env::*, fs::File, net::SocketAddr, path::PathBuf};
 use structopt::StructOpt;
-use tokio::io::{unix::AsyncFd, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{unix::AsyncFd, AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 
@@ -38,6 +37,10 @@ struct Opts {
 async fn main() {
     // Define CLI options
     let opts = Opts::from_args();
+    if !file_is_valid(&opts.path) {
+        error!("{}: File not valid", opts.path.display());
+        std::process::exit(1);
+    }
 
     // Init logger
     let log_level = if opts.quiet {
@@ -99,19 +102,25 @@ async fn main() {
     loop {
         let (sock, addr) = listener.accept().await.unwrap();
         info!("{}: New client connected", addr);
-        tokio::task::spawn(new_client(sock, file_fd, rx.clone()));
+        let file = File::open(&opts.path).unwrap();
+        tokio::task::spawn(new_client(file, sock, file_fd, rx.clone()));
     }
 }
 
-async fn new_client(mut sock: TcpStream, fd: RawFd, rx: watch::Receiver<FileLength>) {
+async fn new_client(
+    mut file: File,
+    mut sock: TcpStream,
+    fd: RawFd,
+    rx: watch::Receiver<FileLength>,
+) {
     // The first thing the client will do is send a header
-    let hdr = {
+    let idx = {
         // TODO: timeout
         // TODO: length limit
         let mut buf = String::new();
         BufReader::new(&mut sock).read_line(&mut buf).await.unwrap();
         debug!("Client sent header: {:?}", &buf);
-        match header(buf.as_bytes()) {
+        match crate::header::index(buf.as_bytes()) {
             nom::IResult::Done(_, x) => x,
             nom::IResult::Error(e) => {
                 error!("Bad header: {}", buf);
@@ -123,34 +132,12 @@ async fn new_client(mut sock: TcpStream, fd: RawFd, rx: watch::Receiver<FileLeng
             }
         }
     };
-    info!("Client sent header {:?}", hdr);
-    match hdr {
-        Header::List => {
-            // Listing files could be expensive, let's do it in this thread.
-            sock.write_all(list_files().unwrap().as_bytes())
-                .await
-                .unwrap();
-        }
-        Header::Stream { path, index } => {
-            if file_is_valid(&path) {
-                // OK! This client will start watching a file. Let's remove
-                // it from the nursery and change its epoll parameters.
-                // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
-                let mut file = File::open(&path).unwrap();
-                let offset = resolve_index(&mut file, index).expect("index").unwrap();
-                let offset = i64::try_from(offset).unwrap();
-                // This is long-running:
-                client_task(sock, offset, fd, rx).await;
-            } else {
-                warn!("Client tried to access {:?} but isn't allowed", path);
-            }
-        }
-        Header::Stats => {
-            if sock.peer_addr().unwrap().ip().is_loopback() {
-                sock.write_all(b"TODO\n").await.unwrap();
-            } else {
-                warn!("Client requested stats but isn't localhost");
-            }
-        }
-    }
+    info!("Client sent header {:?}", idx);
+    // OK! This client will start watching a file. Let's remove
+    // it from the nursery and change its epoll parameters.
+    // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
+    let offset = resolve_index(&mut file, idx).expect("index").unwrap();
+    let offset = i64::try_from(offset).unwrap();
+    // This is long-running:
+    client_task(sock, offset, fd, rx).await;
 }
