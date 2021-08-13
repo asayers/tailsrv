@@ -114,24 +114,12 @@ async fn handle_client(
     mut rx: watch::Receiver<FileLength>,
 ) {
     // The first thing the client will do is send a header
-    let idx = {
-        // TODO: timeout
-        // TODO: length limit
-        let mut buf = String::new();
-        BufReader::new(&mut sock).read_line(&mut buf).await.unwrap();
-        debug!("Client sent header: {:?}", &buf);
-        match parse_index(buf.as_bytes()) {
-            nom::IResult::Done(_, x) => x,
-            nom::IResult::Error(e) => {
-                error!("Bad header: {}", buf);
-                panic!("{}", e);
-            }
-            nom::IResult::Incomplete { .. } => {
-                error!("Partial header: {}", buf);
-                panic!();
-            }
-        }
-    };
+    // TODO: timeout
+    // TODO: length limit
+    let mut buf = String::new();
+    BufReader::new(&mut sock).read_line(&mut buf).await.unwrap();
+    debug!("Client sent header bytes {:?}", &buf);
+    let idx = buf.parse::<Index>().unwrap();
     info!("Client sent header {:?}", idx);
     // OK! This client will start watching a file. Let's remove
     // it from the nursery and change its epoll parameters.

@@ -5,10 +5,7 @@ mod prefixed;
 use self::line::*;
 #[cfg(feature = "prefixed")]
 use self::prefixed::*;
-use nom::*;
-use std::fs::File;
-use std::ops::Neg;
-use std::{fmt, io};
+use std::{fs::File, ops::Neg, str::FromStr};
 use thiserror::*;
 
 #[derive(Debug)]
@@ -21,28 +18,27 @@ pub enum Index {
 }
 
 // TODO: Unit tests
-named!(
-    pub parse_index<Index>,
-    alt!(byte_idx | line_idx | seqnum_idx | start_idx | end_idx)
-);
-named!(
-    byte_idx<Index>,
-    do_parse!(tag!("byte ") >> bytes: natural >> (Index::Byte(bytes as i64)))
-);
-named!(
-    line_idx<Index>,
-    do_parse!(tag!("line ") >> lines: natural >> (Index::Line(lines as i64)))
-);
-named!(
-    seqnum_idx<Index>,
-    do_parse!(tag!("seqnum ") >> seqnum: natural >> (Index::SeqNum(seqnum)))
-);
-named!(start_idx<Index>, do_parse!(tag!("start") >> (Index::Start)));
-named!(end_idx<Index>, do_parse!(tag!("end") >> (Index::End)));
-named!(
-    natural<usize>,
-    flat_map!(recognize!(nom::digit), parse_to!(usize))
-);
+impl FromStr for Index {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Index> {
+        let mut tokens = s.split(' ');
+        match tokens.next() {
+            None => Ok(Index::Start),
+            Some("start") => Ok(Index::Start),
+            Some("end") => Ok(Index::End),
+            Some("byte") => Ok(Index::Byte(
+                tokens.next().ok_or(Error::NotEnoughTokens)?.parse()?,
+            )),
+            Some("line") => Ok(Index::Byte(
+                tokens.next().ok_or(Error::NotEnoughTokens)?.parse()?,
+            )),
+            Some("seqnum") => Ok(Index::Byte(
+                tokens.next().ok_or(Error::NotEnoughTokens)?.parse()?,
+            )),
+            _ => Err(Error::UnknownIndex),
+        }
+    }
+}
 
 /// Resolves an index to a byte offset.
 ///
@@ -68,16 +64,14 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("Client not found")]
-    ClientNotFound,
-    #[error("File not watched")]
-    FileNotWatched,
+    #[error("Unknown index")]
+    UnknownIndex,
     #[error("Line-prefixed support not enabled")]
     PrefixedNotEnabled,
+    #[error("Expected another token")]
+    NotEnoughTokens,
     #[error("{0}")]
-    Io(#[from] io::Error),
+    Io(#[from] std::io::Error),
     #[error("{0}")]
-    Nix(#[from] nix::Error),
-    #[error("{0}")]
-    Fmt(#[from] fmt::Error),
+    Int(#[from] std::num::ParseIntError),
 }
