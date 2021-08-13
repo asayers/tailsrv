@@ -1,12 +1,10 @@
 pub mod file_list;
 pub mod header;
 pub mod index;
-pub mod pool;
 pub mod types;
 
 use crate::file_list::*;
 use crate::index::*;
-use crate::pool::*;
 use crate::types::*;
 use inotify::*;
 use log::*;
@@ -103,15 +101,15 @@ async fn main() {
         let (sock, addr) = listener.accept().await.unwrap();
         info!("{}: New client connected", addr);
         let file = File::open(&opts.path).unwrap();
-        tokio::task::spawn(new_client(file, sock, file_fd, rx.clone()));
+        tokio::task::spawn(handle_client(file, sock, file_fd, rx.clone()));
     }
 }
 
-async fn new_client(
+async fn handle_client(
     mut file: File,
     mut sock: TcpStream,
     fd: RawFd,
-    rx: watch::Receiver<FileLength>,
+    mut rx: watch::Receiver<FileLength>,
 ) {
     // The first thing the client will do is send a header
     let idx = {
@@ -136,8 +134,57 @@ async fn new_client(
     // OK! This client will start watching a file. Let's remove
     // it from the nursery and change its epoll parameters.
     // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
-    let offset = resolve_index(&mut file, idx).expect("index").unwrap();
-    let offset = i64::try_from(offset).unwrap();
-    // This is long-running:
-    client_task(sock, offset, fd, rx).await;
+    let initial_offset = resolve_index(&mut file, idx).expect("index").unwrap();
+    let initial_offset = i64::try_from(initial_offset).unwrap();
+    std::mem::drop(file);
+
+    /// The maximum number of bytes which will be `sendfile()`'d to a client before moving onto the
+    /// next waiting client.
+    ///
+    /// A bigger size increases total throughput, but may allow a client who is reading a lot of data
+    /// to hurt reaction latency for other clients.
+    const CHUNK_SIZE: usize = 1024 * 1024;
+
+    let mut offset = initial_offset;
+    loop {
+        sock.writable().await.unwrap();
+        info!("Socket has become writable");
+        // How many bytes the client wants
+        let wanted = i64::try_from(*rx.borrow()).unwrap() - offset;
+        if wanted <= 0 {
+            // We're all caught-up.  Wait for new data to be written
+            // to the file before continuing.
+            info!("Waiting for changes");
+            match rx.changed().await {
+                Ok(()) => continue,
+                Err(_) => {
+                    // The sender is gone.  This means that the file has
+                    // been deleted.
+                    info!("Closing socket: file was deleted");
+                    return;
+                }
+            }
+        }
+        // How many bytes the client will get
+        let cnt = wanted.min(CHUNK_SIZE as i64);
+        info!("Sending {} bytes from offset {}", cnt, offset);
+        let ret = sock.try_io(tokio::io::Interest::WRITABLE, || {
+            nix::sys::sendfile::sendfile(sock.as_raw_fd(), fd, Some(&mut offset), cnt as usize)
+                .map_err(std::io::Error::from)
+        });
+        if let Err(e) = ret {
+            match e.kind() {
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset => {
+                    // The client hung up
+                    info!("Socket closed by other side");
+                    return;
+                }
+                std::io::ErrorKind::WouldBlock => {
+                    // The socket is not writeable. Wait for it to become writable
+                    // again before continuing.
+                }
+                _ => panic!("{}", e),
+            }
+        }
+    }
 }
