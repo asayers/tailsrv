@@ -8,21 +8,21 @@ use crate::file_list::*;
 use crate::header::*;
 use crate::index::*;
 use crate::pool::*;
+use crate::types::*;
+use inotify::*;
 use log::*;
 use std::os::unix::io::AsRawFd;
-use std::{
-    convert::TryFrom,
-    env::*,
-    fs::File,
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-};
+use std::os::unix::prelude::RawFd;
+use std::{convert::TryFrom, env::*, fs::File, net::SocketAddr, path::PathBuf};
 use structopt::StructOpt;
 use tokio::io::{unix::AsyncFd, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::sync::watch;
 
 #[derive(StructOpt)]
 struct Opts {
+    /// The file which will be broadcast to all clients
+    path: PathBuf,
     /// The port number on which to listen for new connections
     #[structopt(long, short)]
     port: u16,
@@ -51,16 +51,37 @@ async fn main() {
         warn!("Index files are not implemented yet");
     }
 
-    let pool = Arc::new(Mutex::new(WatcherPool::new()));
+    let file = File::open(&opts.path).unwrap();
+    let file_fd = file.as_raw_fd();
+    let file_len = file.metadata().unwrap().len();
+    let (tx, rx) = watch::channel::<FileLength>(file_len);
+    let mut inotify = Inotify::init().unwrap();
+    inotify
+        .add_watch(
+            &opts.path,
+            WatchMask::MODIFY | WatchMask::DELETE_SELF | WatchMask::MOVE_SELF,
+        )
+        .unwrap();
 
     {
         // Start the file-watching task
-        let pool = pool.clone();
-        let inotify_fd = AsyncFd::new(pool.lock().unwrap().inotify.as_raw_fd()).unwrap();
+        let inotify_fd = AsyncFd::new(inotify.as_raw_fd()).unwrap();
+        let mut inotify_buf = vec![0; 4096];
         tokio::task::spawn(async move {
             loop {
                 let mut guard = inotify_fd.readable().await.unwrap();
-                pool.lock().unwrap().update_all().unwrap();
+                for ev in inotify.read_events(&mut inotify_buf).unwrap() {
+                    if ev.mask.contains(EventMask::DELETE_SELF)
+                        || ev.mask.contains(EventMask::MOVE_SELF)
+                    {
+                        info!("Watched file disappeared");
+                        std::process::exit(0);
+                    } else if ev.mask.contains(EventMask::MODIFY) {
+                        let file_len = file.metadata().unwrap().len();
+                        info!("{:?}: File length is now {}", ev.wd, file_len);
+                        tx.send(file_len).unwrap();
+                    }
+                }
                 guard.clear_ready();
             }
         });
@@ -78,11 +99,11 @@ async fn main() {
     loop {
         let (sock, addr) = listener.accept().await.unwrap();
         info!("{}: New client connected", addr);
-        tokio::task::spawn(new_client(sock, pool.clone()));
+        tokio::task::spawn(new_client(sock, file_fd, rx.clone()));
     }
 }
 
-async fn new_client(mut sock: TcpStream, pool: Arc<Mutex<WatcherPool>>) {
+async fn new_client(mut sock: TcpStream, fd: RawFd, rx: watch::Receiver<FileLength>) {
     // The first thing the client will do is send a header
     let hdr = {
         // TODO: timeout
@@ -118,9 +139,8 @@ async fn new_client(mut sock: TcpStream, pool: Arc<Mutex<WatcherPool>>) {
                 let mut file = File::open(&path).unwrap();
                 let offset = resolve_index(&mut file, index).expect("index").unwrap();
                 let offset = i64::try_from(offset).unwrap();
-                let (file, rx) = pool.lock().unwrap().register_client(&path).unwrap();
                 // This is long-running:
-                client_task(sock, offset, file, rx).await;
+                client_task(sock, offset, fd, rx).await;
             } else {
                 warn!("Client tried to access {:?} but isn't allowed", path);
             }
