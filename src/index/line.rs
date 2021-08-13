@@ -13,21 +13,21 @@ use std::fs::File;
 /// assert_eq!(linebyte("test_data/file.txt", 3), None);
 /// ```
 // FIXME: Let's not mmap log files...
-pub fn linebyte(file: &File, cnt: usize) -> Option<usize> {
+pub fn linebyte(file: &File, cnt: usize, delim: u8) -> Option<usize> {
     if cnt == 0 {
         return Some(0);
     }
     file.lock_exclusive().expect("Lock file to resolve index"); // Try to make mmaping safer
     let mmap = unsafe { Mmap::map(file).unwrap() };
-    Memchr::new(b'\n', &mmap).nth(cnt - 1)
+    Memchr::new(delim, &mmap).nth(cnt - 1)
 }
 
 // FIXME: Let's not mmap log files...
-pub fn rlinebyte(file: &File, cnt: usize) -> Option<usize> {
+pub fn rlinebyte(file: &File, cnt: usize, delim: u8) -> Option<usize> {
     if cnt == 0 {
         return Some(0);
     }
     file.lock_exclusive().expect("Lock file to resolve index"); // Try to make mmaping safer
     let mmap = unsafe { Mmap::map(file).unwrap() };
-    Memchr::new(b'\n', &mmap).rev().nth(cnt - 1)
+    Memchr::new(delim, &mmap).rev().nth(cnt - 1)
 }

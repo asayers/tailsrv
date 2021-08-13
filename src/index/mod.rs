@@ -10,11 +10,12 @@ use thiserror::*;
 
 #[derive(Debug)]
 pub enum Index {
-    Byte(i64),
-    Line(i64),
-    SeqNum(usize),
     Start,
     End,
+    Byte(i64),
+    Line(i64),
+    Zero(i64),
+    SeqNum(usize),
 }
 
 // TODO: Unit tests
@@ -29,10 +30,13 @@ impl FromStr for Index {
             Some("byte") => Ok(Index::Byte(
                 tokens.next().ok_or(Error::NotEnoughTokens)?.parse()?,
             )),
-            Some("line") => Ok(Index::Byte(
+            Some("line") => Ok(Index::Line(
                 tokens.next().ok_or(Error::NotEnoughTokens)?.parse()?,
             )),
-            Some("seqnum") => Ok(Index::Byte(
+            Some("zero") => Ok(Index::Zero(
+                tokens.next().ok_or(Error::NotEnoughTokens)?.parse()?,
+            )),
+            Some("seqnum") => Ok(Index::SeqNum(
                 tokens.next().ok_or(Error::NotEnoughTokens)?.parse()?,
             )),
             _ => Err(Error::UnknownIndex),
@@ -47,16 +51,18 @@ impl FromStr for Index {
 // TODO: Unit tests
 pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
     Ok(match idx {
+        Index::Start => Some(0),
+        Index::End => Some(file.metadata()?.len() as usize),
         Index::Byte(x) if x >= 0 => Some(x as usize),
         Index::Byte(x) => Some(file.metadata()?.len() as usize - (x.neg() as usize)),
-        Index::Line(x) if x >= 0 => linebyte(file, x as usize),
-        Index::Line(x) => rlinebyte(file, x.neg() as usize),
+        Index::Line(x) if x >= 0 => linebyte(file, x as usize, b'\n'),
+        Index::Line(x) => rlinebyte(file, x.neg() as usize, b'\n'),
+        Index::Zero(x) if x >= 0 => linebyte(file, x as usize, 0),
+        Index::Zero(x) => rlinebyte(file, x.neg() as usize, 0),
         #[cfg(feature = "prefixed")]
         Index::SeqNum(x) => seqbyte(file, x),
         #[cfg(not(feature = "prefixed"))]
         Index::SeqNum(_) => return Err(Error::PrefixedNotEnabled),
-        Index::Start => Some(0),
-        Index::End => Some(file.metadata()?.len() as usize),
     })
 }
 
