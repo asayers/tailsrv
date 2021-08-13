@@ -547,6 +547,7 @@ dependencies = [
  "memchr",
  "memmap",
  "nix",
+ "once_cell",
  "same-file",
  "structopt",
  "thiserror",

@@ -1,12 +1,12 @@
-mod line;
 #[cfg(feature = "prefixed")]
 mod prefixed;
 
-use self::line::*;
 #[cfg(feature = "prefixed")]
 use self::prefixed::*;
+use crate::tracker::Tracker;
 use log::*;
-use std::{fs::File, ops::Neg, str::FromStr};
+use once_cell::sync::OnceCell;
+use std::{convert::TryFrom, fs::File, ops::Neg, str::FromStr, sync::Mutex};
 use thiserror::*;
 
 #[derive(Debug)]
@@ -38,6 +38,13 @@ impl FromStr for Index {
     }
 }
 
+pub static TRACKERS: OnceCell<Mutex<Trackers>> = OnceCell::new();
+
+pub struct Trackers {
+    pub lines: Tracker,
+    pub nulls: Tracker,
+}
+
 /// Resolves an index to a byte offset.
 ///
 /// `None` means that the index refers to a position beyond the end of the file and we don't have
@@ -49,10 +56,36 @@ pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
         Index::End => Some(file.metadata()?.len() as usize),
         Index::Byte(x) if x >= 0 => Some(x as usize),
         Index::Byte(x) => Some(file.metadata()?.len() as usize - (x.neg() as usize)),
-        Index::Line(x) if x >= 0 => linebyte(file, x as usize, b'\n'),
-        Index::Line(x) => rlinebyte(file, x.neg() as usize, b'\n'),
-        Index::Zero(x) if x >= 0 => linebyte(file, x as usize, 0),
-        Index::Zero(x) => rlinebyte(file, x.neg() as usize, 0),
+        Index::Line(x) => {
+            if x < 0 {
+                todo!()
+            }
+            Some(
+                TRACKERS
+                    .get()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .lines
+                    .line2range(usize::try_from(x).unwrap())
+                    .start as usize,
+            )
+        }
+        Index::Zero(x) => {
+            if x < 0 {
+                todo!()
+            }
+            Some(
+                TRACKERS
+                    .get()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .nulls
+                    .line2range(usize::try_from(x).unwrap())
+                    .start as usize,
+            )
+        }
         #[cfg(feature = "prefixed")]
         Index::SeqNum(x) => seqbyte(file, x),
         #[cfg(not(feature = "prefixed"))]

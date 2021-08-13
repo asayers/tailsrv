@@ -1,4 +1,5 @@
 pub mod index;
+pub mod tracker;
 
 use crate::index::*;
 use inotify::*;
@@ -10,6 +11,7 @@ use std::{
     net::SocketAddr,
     os::unix::{io::AsRawFd, prelude::RawFd},
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 use structopt::StructOpt;
 use tokio::io::{unix::AsyncFd, AsyncBufReadExt, BufReader};
@@ -25,9 +27,6 @@ struct Opts {
     /// The port number on which to listen for new connections
     #[structopt(long, short)]
     port: u16,
-    /// Lazily maintain index files in /tmp for faster seeking
-    #[structopt(long, short)]
-    index: bool,
     /// Don't produce output unless there's a problem
     #[structopt(long, short)]
     quiet: bool,
@@ -50,10 +49,6 @@ async fn main() {
     };
     loggerv::init_with_level(log_level).unwrap();
 
-    if opts.index {
-        warn!("Index files are not implemented yet");
-    }
-
     let file = File::open(&opts.path).unwrap();
     let file_fd = file.as_raw_fd();
     let file_len = file.metadata().unwrap().len();
@@ -66,6 +61,33 @@ async fn main() {
         )
         .unwrap();
 
+    info!("Peforming initial index of file...");
+    TRACKERS
+        .set(Mutex::new(Trackers {
+            lines: crate::tracker::Tracker::new(&opts.path, b'\n').unwrap(),
+            nulls: crate::tracker::Tracker::new(&opts.path, 0).unwrap(),
+        }))
+        .map_err(|_| "Tried to set trackers twice")
+        .unwrap();
+    info!("Done");
+
+    {
+        let mut rx = rx.clone();
+        tokio::task::spawn(async move {
+            while let Ok(_) = rx.changed().await {
+                info!("Updating trackers...");
+                let mut trackers = TRACKERS.get().unwrap().lock().unwrap();
+                trackers.lines.update().unwrap();
+                trackers.nulls.update().unwrap();
+                info!(
+                    "Finished updating trackers: {} lines, {} nulls",
+                    trackers.lines.len(),
+                    trackers.nulls.len()
+                );
+            }
+        });
+    }
+
     {
         // Start the file-watching task
         let inotify_fd = AsyncFd::new(inotify.as_raw_fd()).unwrap();
@@ -74,15 +96,15 @@ async fn main() {
             loop {
                 let mut guard = inotify_fd.readable().await.unwrap();
                 for ev in inotify.read_events(&mut inotify_buf).unwrap() {
-                    if ev.mask.contains(EventMask::DELETE_SELF)
+                    if ev.mask.contains(EventMask::MODIFY) {
+                        let file_len = file.metadata().unwrap().len();
+                        info!("{:?}: File length is now {}", ev.wd, file_len);
+                        tx.send(file_len).unwrap();
+                    } else if ev.mask.contains(EventMask::DELETE_SELF)
                         || ev.mask.contains(EventMask::MOVE_SELF)
                     {
                         info!("Watched file disappeared");
                         std::process::exit(0);
-                    } else if ev.mask.contains(EventMask::MODIFY) {
-                        let file_len = file.metadata().unwrap().len();
-                        info!("{:?}: File length is now {}", ev.wd, file_len);
-                        tx.send(file_len).unwrap();
                     }
                 }
                 guard.clear_ready();
