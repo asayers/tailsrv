@@ -11,14 +11,15 @@ use std::{
     net::SocketAddr,
     os::unix::{io::AsRawFd, prelude::RawFd},
     path::PathBuf,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
 };
 use structopt::StructOpt;
 use tokio::io::{unix::AsyncFd, AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
-
-pub type FileLength = u64; /* bytes */
 
 #[derive(StructOpt)]
 struct Opts {
@@ -38,6 +39,8 @@ struct Opts {
     binary_proto: bool,
 }
 
+static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
+
 #[tokio::main]
 async fn main() {
     // Define CLI options
@@ -54,7 +57,8 @@ async fn main() {
     let file = File::open(&opts.path).unwrap();
     let file_fd = file.as_raw_fd();
     let file_len = file.metadata().unwrap().len();
-    let (tx, rx) = watch::channel::<FileLength>(file_len);
+    FILE_LENGTH.store(file_len, Ordering::SeqCst);
+    let (tx, rx) = watch::channel::<()>(());
     let mut inotify = Inotify::init().unwrap();
     inotify
         .add_watch(
@@ -101,7 +105,8 @@ async fn main() {
                     if ev.mask.contains(EventMask::MODIFY) {
                         let file_len = file.metadata().unwrap().len();
                         info!("{:?}: File length is now {}", ev.wd, file_len);
-                        tx.send(file_len).unwrap();
+                        FILE_LENGTH.store(file_len, Ordering::SeqCst);
+                        tx.send(()).unwrap();
                     } else if ev.mask.contains(EventMask::DELETE_SELF)
                         || ev.mask.contains(EventMask::MOVE_SELF)
                     {
@@ -142,7 +147,7 @@ async fn handle_client(
     mut file: File,
     mut sock: TcpStream,
     fd: RawFd,
-    mut rx: watch::Receiver<FileLength>,
+    mut rx: watch::Receiver<()>,
 ) {
     // The first thing the client will do is send a header
     // TODO: timeout
@@ -172,7 +177,8 @@ async fn handle_client(
         sock.writable().await.unwrap();
         info!("Socket has become writable");
         // How many bytes the client wants
-        let wanted = i64::try_from(*rx.borrow()).unwrap() - offset;
+        let file_len = FILE_LENGTH.load(Ordering::SeqCst);
+        let wanted = i64::try_from(file_len).unwrap() - offset;
         if wanted <= 0 {
             // We're all caught-up.  Wait for new data to be written
             // to the file before continuing.
