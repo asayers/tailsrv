@@ -6,7 +6,6 @@ use thiserror::*;
 
 #[derive(Debug)]
 pub enum Index {
-    Start,
     End,
     Byte(i64),
     Idx(i64),
@@ -24,8 +23,7 @@ impl FromStr for Index {
             return Ok(Index::Idx(x));
         }
         match first {
-            "" | "start" => Ok(Index::Start),
-            "end" => Ok(Index::End),
+            "" | "end" => Ok(Index::End),
             "byte" => Ok(Index::Byte(token()?.parse()?)),
             _ => Err(Error::UnknownIndex),
         }
@@ -41,7 +39,6 @@ pub static TRACKERS: OnceCell<Mutex<Tracker>> = OnceCell::new();
 // TODO: Unit tests
 pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
     Ok(match idx {
-        Index::Start => Some(0),
         Index::End => Some(file.metadata()?.len() as usize),
         Index::Byte(x) if x >= 0 => Some(x as usize),
         Index::Byte(x) => Some(file.metadata()?.len() as usize - (x.neg() as usize)),
