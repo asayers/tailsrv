@@ -38,25 +38,23 @@ impl FromStr for Index {
     }
 }
 
-pub static TRACKERS: OnceCell<Mutex<Trackers>> = OnceCell::new();
-
-pub struct Trackers {
-    pub lines: Tracker,
-    pub nulls: Tracker,
-}
+pub static TRACKERS: OnceCell<Mutex<Tracker>> = OnceCell::new();
 
 /// Resolves an index to a byte offset.
 ///
 /// `None` means that the index refers to a position beyond the end of the file and we don't have
 /// enough information to resolve it yet.
 // TODO: Unit tests
-pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
+pub fn resolve_index(zero_terminated: bool, file: &mut File, idx: Index) -> Result<Option<usize>> {
     Ok(match idx {
         Index::Start => Some(0),
         Index::End => Some(file.metadata()?.len() as usize),
         Index::Byte(x) if x >= 0 => Some(x as usize),
         Index::Byte(x) => Some(file.metadata()?.len() as usize - (x.neg() as usize)),
         Index::Line(x) => {
+            if zero_terminated {
+                panic!()
+            }
             if x < 0 {
                 todo!()
             }
@@ -66,11 +64,13 @@ pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
                     .unwrap()
                     .lock()
                     .unwrap()
-                    .lines
                     .lookup(usize::try_from(x).unwrap()),
             )
         }
         Index::Zero(x) => {
+            if !zero_terminated {
+                panic!()
+            }
             if x < 0 {
                 todo!()
             }
@@ -80,7 +80,6 @@ pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
                     .unwrap()
                     .lock()
                     .unwrap()
-                    .nulls
                     .lookup(usize::try_from(x).unwrap()),
             )
         }

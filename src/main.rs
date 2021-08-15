@@ -30,6 +30,9 @@ struct Opts {
     /// Don't produce output unless there's a problem
     #[structopt(long, short)]
     quiet: bool,
+    /// Line delimiter is NUL, not newline
+    #[structopt(long, short)]
+    zero_terminated: bool,
 }
 
 #[tokio::main]
@@ -62,27 +65,27 @@ async fn main() {
         .unwrap();
 
     info!("Peforming initial index of file...");
+    let delim = if opts.zero_terminated { 0 } else { b'\n' };
     TRACKERS
-        .set(Mutex::new(Trackers {
-            lines: crate::tracker::Tracker::new(&opts.path, b'\n').unwrap(),
-            nulls: crate::tracker::Tracker::new(&opts.path, 0).unwrap(),
-        }))
+        .set(Mutex::new(
+            crate::tracker::Tracker::new(&opts.path, delim).unwrap(),
+        ))
         .map_err(|_| "Tried to set trackers twice")
         .unwrap();
     info!("Done");
 
     {
         let mut rx = rx.clone();
+        let zero_terminated = opts.zero_terminated;
         tokio::task::spawn(async move {
             while let Ok(_) = rx.changed().await {
                 info!("Updating trackers...");
                 let mut trackers = TRACKERS.get().unwrap().lock().unwrap();
-                trackers.lines.update().unwrap();
-                trackers.nulls.update().unwrap();
+                trackers.update().unwrap();
                 info!(
-                    "Finished updating trackers: {} lines, {} nulls",
-                    trackers.lines.len(),
-                    trackers.nulls.len()
+                    "Finished updating trackers: {} {}",
+                    trackers.len(),
+                    if zero_terminated { "zeroes" } else { "lines" },
                 );
             }
         });
@@ -125,11 +128,18 @@ async fn main() {
         let (sock, addr) = listener.accept().await.unwrap();
         info!("{}: New client connected", addr);
         let file = File::open(&opts.path).unwrap();
-        tokio::task::spawn(handle_client(file, sock, file_fd, rx.clone()));
+        tokio::task::spawn(handle_client(
+            opts.zero_terminated,
+            file,
+            sock,
+            file_fd,
+            rx.clone(),
+        ));
     }
 }
 
 async fn handle_client(
+    zero_terminated: bool,
     mut file: File,
     mut sock: TcpStream,
     fd: RawFd,
@@ -146,7 +156,9 @@ async fn handle_client(
     // OK! This client will start watching a file. Let's remove
     // it from the nursery and change its epoll parameters.
     // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
-    let initial_offset = resolve_index(&mut file, idx).expect("index").unwrap();
+    let initial_offset = resolve_index(zero_terminated, &mut file, idx)
+        .expect("index")
+        .unwrap();
     let initial_offset = i64::try_from(initial_offset).unwrap();
     std::mem::drop(file);
 
