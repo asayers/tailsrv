@@ -1,4 +1,5 @@
 use std::{
+    convert::TryFrom,
     fs::File,
     io::{BufRead, BufReader},
     path::Path,
@@ -51,11 +52,20 @@ impl Tracker {
     }
 
     /// The offset of the byte after the `n`th delimiter.
-    pub fn lookup(&self, n: usize) -> usize {
+    pub fn lookup(&self, n: i64) -> Option<usize> {
+        let len = i64::try_from(self.len()).unwrap();
         if n == 0 {
-            0
+            Some(0)
+        } else if n > len {
+            None
+        } else if n < -len {
+            None
+        } else if n < 0 {
+            let n = usize::try_from(len + n).unwrap();
+            Some(self.newlines[n - 1] + 1)
         } else {
-            self.newlines[n - 1] + 1
+            let n = usize::try_from(n).unwrap();
+            Some(self.newlines[n - 1] + 1)
         }
     }
 

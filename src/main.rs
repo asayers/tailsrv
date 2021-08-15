@@ -143,14 +143,16 @@ async fn handle_client(
     // TODO: length limit
     let mut buf = String::new();
     BufReader::new(&mut sock).read_line(&mut buf).await.unwrap();
-    debug!("Client sent header bytes {:?}", &buf);
+    info!("Client sent header bytes {:?}", &buf);
     let idx = buf.parse::<Index>().unwrap();
     info!("Client sent header {:?}", idx);
     // OK! This client will start watching a file. Let's remove
     // it from the nursery and change its epoll parameters.
     // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
-    let initial_offset = resolve_index(&mut file, idx).expect("index").unwrap();
-    let initial_offset = i64::try_from(initial_offset).unwrap();
+    let initial_offset = match resolve_index(&mut file, idx).expect("index") {
+        Some(x) => i64::try_from(x).unwrap(),
+        None => todo!("Wait for index to be available"),
+    };
     std::mem::drop(file);
 
     /// The maximum number of bytes which will be `sendfile()`'d to a client before moving onto the

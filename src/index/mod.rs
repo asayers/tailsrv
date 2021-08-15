@@ -1,7 +1,7 @@
 use crate::tracker::Tracker;
 use log::*;
 use once_cell::sync::OnceCell;
-use std::{convert::TryFrom, fs::File, ops::Neg, str::FromStr, sync::Mutex};
+use std::{fs::File, ops::Neg, str::FromStr, sync::Mutex};
 use thiserror::*;
 
 #[derive(Debug)]
@@ -15,7 +15,6 @@ pub enum Index {
 impl FromStr for Index {
     type Err = Error;
     fn from_str(s: &str) -> Result<Index> {
-        info!("Parsing {}", s);
         let mut tokens = s.split(' ').map(|x| x.trim());
         let mut token = || tokens.next().ok_or(Error::NotEnoughTokens);
         let first = token()?;
@@ -42,19 +41,7 @@ pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
         Index::End => Some(file.metadata()?.len() as usize),
         Index::Byte(x) if x >= 0 => Some(x as usize),
         Index::Byte(x) => Some(file.metadata()?.len() as usize - (x.neg() as usize)),
-        Index::Idx(x) => {
-            if x < 0 {
-                todo!()
-            }
-            Some(
-                TRACKERS
-                    .get()
-                    .unwrap()
-                    .lock()
-                    .unwrap()
-                    .lookup(usize::try_from(x).unwrap()),
-            )
-        }
+        Index::Idx(x) => TRACKERS.get().unwrap().lock().unwrap().lookup(x),
     })
 }
 
