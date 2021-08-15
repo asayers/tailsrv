@@ -10,7 +10,7 @@ use std::{
     fs::File,
     net::SocketAddr,
     os::unix::{io::AsRawFd, prelude::RawFd},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Mutex,
 };
 use structopt::StructOpt;
@@ -39,10 +39,6 @@ struct Opts {
 async fn main() {
     // Define CLI options
     let opts = Opts::from_args();
-    if !file_is_valid(&opts.path) {
-        error!("{}: File not valid", opts.path.display());
-        std::process::exit(1);
-    }
 
     // Init logger
     let log_level = if opts.quiet {
@@ -204,32 +200,4 @@ async fn handle_client(
             }
         }
     }
-}
-
-pub fn file_is_valid(path: &Path) -> bool {
-    use ignore::WalkBuilder;
-    use same_file::*;
-    let valid_files = WalkBuilder::new(".")
-        .git_global(false) // Parsing git-related files is surprising
-        .git_ignore(false) // behaviour in the context of tailsrv, so
-        .git_exclude(false) // let's not read those files.
-        .ignore(true) // However, we *should* read generic ".ignore" files...
-        .hidden(true) // and ignore dotfiles (so clients can't read the .ignore files)
-        .parents(false) // Don't search the parent directory for .ignore files.
-        .build();
-    for entry in valid_files {
-        let entry = match entry {
-            Err(e) => {
-                warn!("{}", e);
-                continue;
-            }
-            Ok(entry) => entry,
-        };
-        if entry.file_type().map(|x| x.is_file()).unwrap_or(false)
-            && is_same_file(path, entry.path()).unwrap_or(false)
-        {
-            return true;
-        }
-    }
-    false
 }
