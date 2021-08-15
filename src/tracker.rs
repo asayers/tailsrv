@@ -1,15 +1,14 @@
 use std::{
     fs::File,
     io::{BufRead, BufReader},
-    ops::Range,
     path::Path,
 };
 
 /// Records the locations of all newlines in a file.
 pub struct Tracker {
     delim: u8,
-    offset: u64,
-    newlines: Vec<u64>,
+    offset: usize,
+    newlines: Vec<usize>,
     file: BufReader<File>,
 }
 
@@ -26,7 +25,7 @@ impl Tracker {
     }
 
     /// `len` is the length of the line _without_ newline.
-    pub fn push_line(&mut self, len: u64) {
+    pub fn push_line(&mut self, len: usize) {
         self.newlines.push(self.offset + len);
         self.offset += len + 1;
     }
@@ -40,36 +39,25 @@ impl Tracker {
                 return Ok(());
             }
             if let Some(x) = memchr::memchr(self.delim, buf) {
-                self.newlines.push(self.offset + x as u64);
-                self.offset += x as u64 + 1;
+                self.newlines.push(self.offset + x);
+                self.offset += x + 1;
                 self.file.consume(x + 1);
             } else {
                 let x = buf.len();
-                self.offset += x as u64;
+                self.offset += x;
                 self.file.consume(x);
             }
         }
     }
 
-    /// Gives a byte-range which doesn't include the newline
-    pub fn line2range(&self, line: usize) -> Range<u64> {
-        let lhs = if line == 0 {
+    /// The offset of the byte after the `n`th delimiter.
+    pub fn lookup(&self, n: usize) -> usize {
+        if n == 0 {
             0
         } else {
-            self.newlines[line - 1] as u64 + 1
-        };
-        let rhs = self.newlines[line] as u64;
-        lhs..rhs
+            self.newlines[n - 1] + 1
+        }
     }
-
-    // pub fn line2pos(&self, mut line: usize) -> csv::Position {
-    //     line += 1;
-    //     let mut pos = csv::Position::new();
-    //     pos.set_line(line as u64)
-    //         .set_byte(self.line2range(line).start)
-    //         .set_record(0);
-    //     pos
-    // }
 
     pub fn len(&self) -> usize {
         self.newlines.len()

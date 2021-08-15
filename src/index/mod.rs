@@ -67,8 +67,7 @@ pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
                     .lock()
                     .unwrap()
                     .lines
-                    .line2range(usize::try_from(x).unwrap())
-                    .start as usize,
+                    .lookup(usize::try_from(x).unwrap()),
             )
         }
         Index::Zero(x) => {
@@ -82,8 +81,7 @@ pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
                     .lock()
                     .unwrap()
                     .nulls
-                    .line2range(usize::try_from(x).unwrap())
-                    .start as usize,
+                    .lookup(usize::try_from(x).unwrap()),
             )
         }
         #[cfg(feature = "prefixed")]
