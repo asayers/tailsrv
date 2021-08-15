@@ -78,7 +78,7 @@ async fn main() {
         let mut rx = rx.clone();
         let zero_terminated = opts.zero_terminated;
         tokio::task::spawn(async move {
-            while let Ok(_) = rx.changed().await {
+            while rx.changed().await.is_ok() {
                 info!("Updating trackers...");
                 let mut trackers = TRACKERS.get().unwrap().lock().unwrap();
                 trackers.update().unwrap();
@@ -128,18 +128,11 @@ async fn main() {
         let (sock, addr) = listener.accept().await.unwrap();
         info!("{}: New client connected", addr);
         let file = File::open(&opts.path).unwrap();
-        tokio::task::spawn(handle_client(
-            opts.zero_terminated,
-            file,
-            sock,
-            file_fd,
-            rx.clone(),
-        ));
+        tokio::task::spawn(handle_client(file, sock, file_fd, rx.clone()));
     }
 }
 
 async fn handle_client(
-    zero_terminated: bool,
     mut file: File,
     mut sock: TcpStream,
     fd: RawFd,
@@ -156,9 +149,7 @@ async fn handle_client(
     // OK! This client will start watching a file. Let's remove
     // it from the nursery and change its epoll parameters.
     // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
-    let initial_offset = resolve_index(zero_terminated, &mut file, idx)
-        .expect("index")
-        .unwrap();
+    let initial_offset = resolve_index(&mut file, idx).expect("index").unwrap();
     let initial_offset = i64::try_from(initial_offset).unwrap();
     std::mem::drop(file);
 

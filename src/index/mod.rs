@@ -9,8 +9,7 @@ pub enum Index {
     Start,
     End,
     Byte(i64),
-    Line(i64),
-    Zero(i64),
+    Idx(i64),
 }
 
 // TODO: Unit tests
@@ -20,12 +19,14 @@ impl FromStr for Index {
         info!("Parsing {}", s);
         let mut tokens = s.split(' ').map(|x| x.trim());
         let mut token = || tokens.next().ok_or(Error::NotEnoughTokens);
-        match token()? {
+        let first = token()?;
+        if let Ok(x) = first.parse::<i64>() {
+            return Ok(Index::Idx(x));
+        }
+        match first {
             "" | "start" => Ok(Index::Start),
             "end" => Ok(Index::End),
             "byte" => Ok(Index::Byte(token()?.parse()?)),
-            "line" => Ok(Index::Line(token()?.parse()?)),
-            "zero" => Ok(Index::Zero(token()?.parse()?)),
             _ => Err(Error::UnknownIndex),
         }
     }
@@ -38,32 +39,13 @@ pub static TRACKERS: OnceCell<Mutex<Tracker>> = OnceCell::new();
 /// `None` means that the index refers to a position beyond the end of the file and we don't have
 /// enough information to resolve it yet.
 // TODO: Unit tests
-pub fn resolve_index(zero_terminated: bool, file: &mut File, idx: Index) -> Result<Option<usize>> {
+pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
     Ok(match idx {
         Index::Start => Some(0),
         Index::End => Some(file.metadata()?.len() as usize),
         Index::Byte(x) if x >= 0 => Some(x as usize),
         Index::Byte(x) => Some(file.metadata()?.len() as usize - (x.neg() as usize)),
-        Index::Line(x) => {
-            if zero_terminated {
-                panic!()
-            }
-            if x < 0 {
-                todo!()
-            }
-            Some(
-                TRACKERS
-                    .get()
-                    .unwrap()
-                    .lock()
-                    .unwrap()
-                    .lookup(usize::try_from(x).unwrap()),
-            )
-        }
-        Index::Zero(x) => {
-            if !zero_terminated {
-                panic!()
-            }
+        Index::Idx(x) => {
             if x < 0 {
                 todo!()
             }
