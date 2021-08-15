@@ -1,8 +1,3 @@
-#[cfg(feature = "prefixed")]
-mod prefixed;
-
-#[cfg(feature = "prefixed")]
-use self::prefixed::*;
 use crate::tracker::Tracker;
 use log::*;
 use once_cell::sync::OnceCell;
@@ -16,7 +11,6 @@ pub enum Index {
     Byte(i64),
     Line(i64),
     Zero(i64),
-    SeqNum(usize),
 }
 
 // TODO: Unit tests
@@ -32,7 +26,6 @@ impl FromStr for Index {
             "byte" => Ok(Index::Byte(token()?.parse()?)),
             "line" => Ok(Index::Line(token()?.parse()?)),
             "zero" => Ok(Index::Zero(token()?.parse()?)),
-            "seqnum" => Ok(Index::SeqNum(token()?.parse()?)),
             _ => Err(Error::UnknownIndex),
         }
     }
@@ -83,10 +76,6 @@ pub fn resolve_index(zero_terminated: bool, file: &mut File, idx: Index) -> Resu
                     .lookup(usize::try_from(x).unwrap()),
             )
         }
-        #[cfg(feature = "prefixed")]
-        Index::SeqNum(x) => seqbyte(file, x),
-        #[cfg(not(feature = "prefixed"))]
-        Index::SeqNum(_) => return Err(Error::PrefixedNotEnabled),
     })
 }
 

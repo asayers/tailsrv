@@ -55,7 +55,7 @@ and then start reading data, hanging up when they're done.  The grammar for the
 headers is:
 
 ```
-INDEX := start | end | byte <n> | line <n> | seqnum <n>
+INDEX := start | end | byte <n> | line <n>
 ```
 
 Fields labeled as `<n>` are parsed as signed integers.
@@ -85,14 +85,6 @@ indexing schemes:
   than `<n>` lines, tailsrv just starts streaming from the end (FIXME).  *This
   indexing strategy only makes sense with files containing newline-delimited
   data.*
-* **sequence number**:  `stream <file> from seqnum <n>`.  If the seqnum
-  is greater than the number of blobs in the file, tailsrv just starts
-  streaming from the end (FIXME).  *This indexing strategy only makes sense
-  with files which are a concatenation of length-prefixed blobs, where the
-  length is encoded as a [base128 varint].* Note: you need to compile with
-  the "prefixed" feature enabled.
-
-[base128 varint]: https://developers.google.com/protocol-buffers/docs/encoding#varints
 
 If the `-i` flag is passed to tailsrv, it will maintain index files in /tmp -
 one for each log file and indexing method (TODO).  These indexes are built and

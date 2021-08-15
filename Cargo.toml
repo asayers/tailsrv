@@ -12,7 +12,6 @@ edition = "2018"
 fs2 = "0.4.3"
 ignore = "0.4.18"
 inotify = "0.9.3"
-integer-encoding = { version = "3.0.2", optional = true }
 log = "0.4.14"
 loggerv = "0.7.2"
 memchr = "2.4.0"
@@ -23,6 +22,3 @@ same-file = "1.0.6"
 structopt = "0.3.22"
 thiserror = "1.0.26"
 tokio = { version = "1.9.0", features = ["full"] }
-
-[features]
-prefixed = ["integer-encoding"]
