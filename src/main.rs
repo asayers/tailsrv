@@ -39,7 +39,7 @@ struct Opts {
     binary_proto: bool,
 }
 
-static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
+pub static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
 
 #[tokio::main]
 async fn main() {
@@ -131,20 +131,12 @@ async fn main() {
     loop {
         let (sock, addr) = listener.accept().await.unwrap();
         info!("{}: New client connected", addr);
-        let file = File::open(&opts.path).unwrap();
-        tokio::task::spawn(handle_client(
-            opts.binary_proto,
-            file,
-            sock,
-            file_fd,
-            rx.clone(),
-        ));
+        tokio::task::spawn(handle_client(opts.binary_proto, sock, file_fd, rx.clone()));
     }
 }
 
 async fn handle_client(
     binary_proto: bool,
-    mut file: File,
     mut sock: TcpStream,
     fd: RawFd,
     mut rx: watch::Receiver<()>,
@@ -166,11 +158,10 @@ async fn handle_client(
     // OK! This client will start watching a file. Let's remove
     // it from the nursery and change its epoll parameters.
     // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
-    let initial_offset = match resolve_index(&mut file, idx).expect("index") {
+    let initial_offset = match resolve_index(idx).expect("index") {
         Some(x) => i64::try_from(x).unwrap(),
         None => todo!("Wait for index to be available"),
     };
-    std::mem::drop(file);
 
     let mut offset = initial_offset;
     loop {

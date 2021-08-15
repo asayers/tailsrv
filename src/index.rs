@@ -1,7 +1,12 @@
 use crate::tracker::Tracker;
+use crate::FILE_LENGTH;
 use log::*;
 use once_cell::sync::OnceCell;
-use std::{fs::File, ops::Neg, str::FromStr, sync::Mutex};
+use std::{
+    ops::Neg,
+    str::FromStr,
+    sync::{atomic::Ordering, Mutex},
+};
 use thiserror::*;
 
 #[derive(Debug)]
@@ -36,11 +41,11 @@ pub static TRACKERS: OnceCell<Mutex<Tracker>> = OnceCell::new();
 /// `None` means that the index refers to a position beyond the end of the file and we don't have
 /// enough information to resolve it yet.
 // TODO: Unit tests
-pub fn resolve_index(file: &mut File, idx: Index) -> Result<Option<usize>> {
+pub fn resolve_index(idx: Index) -> Result<Option<usize>> {
     Ok(match idx {
-        Index::End => Some(file.metadata()?.len() as usize),
+        Index::End => Some(FILE_LENGTH.load(Ordering::SeqCst) as usize),
         Index::Byte(x) if x >= 0 => Some(x as usize),
-        Index::Byte(x) => Some(file.metadata()?.len() as usize - (x.neg() as usize)),
+        Index::Byte(x) => Some(FILE_LENGTH.load(Ordering::SeqCst) as usize - (x.neg() as usize)),
         Index::Idx(x) => TRACKERS.get().unwrap().lock().unwrap().lookup(x),
     })
 }
