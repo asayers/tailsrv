@@ -51,8 +51,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("Unknown index")]
     UnknownIndex,
-    #[error("Line-prefixed support not enabled")]
-    PrefixedNotEnabled,
     #[error("Expected another token")]
     NotEnoughTokens,
     #[error("{0}")]

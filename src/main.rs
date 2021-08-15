@@ -33,6 +33,9 @@ struct Opts {
     /// Line delimiter is NUL, not newline
     #[structopt(long, short)]
     zero_terminated: bool,
+    /// Use the binary protocol instead of text
+    #[structopt(long, short)]
+    binary_proto: bool,
 }
 
 #[tokio::main]
@@ -124,11 +127,18 @@ async fn main() {
         let (sock, addr) = listener.accept().await.unwrap();
         info!("{}: New client connected", addr);
         let file = File::open(&opts.path).unwrap();
-        tokio::task::spawn(handle_client(file, sock, file_fd, rx.clone()));
+        tokio::task::spawn(handle_client(
+            opts.binary_proto,
+            file,
+            sock,
+            file_fd,
+            rx.clone(),
+        ));
     }
 }
 
 async fn handle_client(
+    binary_proto: bool,
     mut file: File,
     mut sock: TcpStream,
     fd: RawFd,
@@ -136,11 +146,17 @@ async fn handle_client(
 ) {
     // The first thing the client will do is send a header
     // TODO: timeout
-    // TODO: length limit
-    let mut buf = String::new();
-    BufReader::new(&mut sock).read_line(&mut buf).await.unwrap();
-    info!("Client sent header bytes {:?}", &buf);
-    let idx = buf.parse::<Index>().unwrap();
+    let idx = if binary_proto {
+        use tokio::io::AsyncReadExt;
+        let idx = sock.read_i64().await.unwrap();
+        Index::Idx(idx)
+    } else {
+        // TODO: length limit
+        let mut buf = String::new();
+        BufReader::new(&mut sock).read_line(&mut buf).await.unwrap();
+        info!("Client sent header bytes {:?}", &buf);
+        buf.parse::<Index>().unwrap()
+    };
     info!("Client sent header {:?}", idx);
     // OK! This client will start watching a file. Let's remove
     // it from the nursery and change its epoll parameters.
@@ -150,13 +166,6 @@ async fn handle_client(
         None => todo!("Wait for index to be available"),
     };
     std::mem::drop(file);
-
-    /// The maximum number of bytes which will be `sendfile()`'d to a client before moving onto the
-    /// next waiting client.
-    ///
-    /// A bigger size increases total throughput, but may allow a client who is reading a lot of data
-    /// to hurt reaction latency for other clients.
-    const CHUNK_SIZE: usize = 1024 * 1024;
 
     let mut offset = initial_offset;
     loop {
@@ -178,11 +187,19 @@ async fn handle_client(
                 }
             }
         }
+
+        /// The maximum number of bytes which will be `sendfile()`'d to a client before moving onto the
+        /// next waiting client.
+        ///
+        /// A bigger size increases total throughput, but may allow a client who is reading a lot of data
+        /// to hurt reaction latency for other clients.
+        const CHUNK_SIZE: i64 = 1024 * 1024;
         // How many bytes the client will get
-        let cnt = wanted.min(CHUNK_SIZE as i64);
+        let cnt = usize::try_from(wanted.min(CHUNK_SIZE)).unwrap();
+
         info!("Sending {} bytes from offset {}", cnt, offset);
         let ret = sock.try_io(tokio::io::Interest::WRITABLE, || {
-            nix::sys::sendfile::sendfile(sock.as_raw_fd(), fd, Some(&mut offset), cnt as usize)
+            nix::sys::sendfile::sendfile(sock.as_raw_fd(), fd, Some(&mut offset), cnt)
                 .map_err(std::io::Error::from)
         });
         if let Err(e) = ret {
