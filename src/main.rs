@@ -1,7 +1,7 @@
+pub mod proto;
 pub mod index;
-pub mod tracker;
 
-use crate::index::*;
+use crate::proto::*;
 use inotify::*;
 use log::*;
 use std::{
@@ -71,7 +71,7 @@ async fn main() {
     let delim = if opts.zero_terminated { 0 } else { b'\n' };
     TRACKERS
         .set(Mutex::new(
-            crate::tracker::Tracker::new(&opts.path, delim).unwrap(),
+            crate::index::DenseIndex::new(&opts.path, delim).unwrap(),
         ))
         .map_err(|_| "Tried to set trackers twice")
         .unwrap();
@@ -146,13 +146,14 @@ async fn handle_client(
     let idx = if binary_proto {
         use tokio::io::AsyncReadExt;
         let idx = sock.read_i64().await.unwrap();
-        Index::Idx(idx)
+        Req::Idx(idx)
     } else {
         // TODO: length limit
+        // TODO: async
         let mut buf = String::new();
         BufReader::new(&mut sock).read_line(&mut buf).await.unwrap();
         info!("Client sent header bytes {:?}", &buf);
-        buf.parse::<Index>().unwrap()
+        buf.parse::<Req>().unwrap()
     };
     info!("Client sent header {:?}", idx);
     // OK! This client will start watching a file. Let's remove

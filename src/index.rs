@@ -1,65 +1,97 @@
-use crate::tracker::Tracker;
-use crate::FILE_LENGTH;
-use log::*;
-use once_cell::sync::OnceCell;
 use std::{
-    ops::Neg,
-    str::FromStr,
-    sync::{atomic::Ordering, Mutex},
+    convert::TryFrom,
+    fs::File,
+    io::{BufRead, BufReader},
+    path::Path,
 };
-use thiserror::*;
 
-#[derive(Debug)]
-pub enum Index {
-    End,
-    Byte(i64),
-    Idx(i64),
+/// Records the locations of all newlines in a file.
+pub struct DenseIndex {
+    delim: u8,
+    offset: usize,
+    newlines: Vec<usize>,
+    file: BufReader<File>,
 }
 
-// TODO: Unit tests
-impl FromStr for Index {
-    type Err = Error;
-    fn from_str(s: &str) -> Result<Index> {
-        let mut tokens = s.split(' ').map(|x| x.trim());
-        let mut token = || tokens.next().ok_or(Error::NotEnoughTokens);
-        let first = token()?;
-        if let Ok(x) = first.parse::<i64>() {
-            return Ok(Index::Idx(x));
+impl DenseIndex {
+    pub fn new(path: &Path, delim: u8) -> std::io::Result<DenseIndex> {
+        let mut ret = DenseIndex {
+            delim,
+            offset: 0,
+            file: BufReader::new(File::open(path)?),
+            newlines: vec![],
+        };
+        ret.update()?;
+        Ok(ret)
+    }
+
+    /// `len` is the length of the line _without_ newline.
+    pub fn push_line(&mut self, len: usize) {
+        self.newlines.push(self.offset + len);
+        self.offset += len + 1;
+    }
+
+    /// Reads the file, starting at EOF the last time this function was
+    /// called, up to the current EOF, adding line-break offsets to `newlines`.
+    pub fn update(&mut self) -> std::io::Result<()> {
+        loop {
+            let buf = self.file.fill_buf()?;
+            if buf.is_empty() {
+                return Ok(());
+            }
+            if let Some(x) = memchr::memchr(self.delim, buf) {
+                self.newlines.push(self.offset + x);
+                self.offset += x + 1;
+                self.file.consume(x + 1);
+            } else {
+                let x = buf.len();
+                self.offset += x;
+                self.file.consume(x);
+            }
         }
-        match first {
-            "" | "end" => Ok(Index::End),
-            "byte" => Ok(Index::Byte(token()?.parse()?)),
-            _ => Err(Error::UnknownIndex),
+    }
+
+    /// The offset of the byte after the `n`th delimiter.
+    pub fn lookup(&self, n: i64) -> Option<usize> {
+        let len = i64::try_from(self.len()).unwrap();
+        if n == 0 {
+            Some(0)
+        } else if n > len {
+            None
+        } else if n < -len {
+            None
+        } else if n < 0 {
+            let n = usize::try_from(len + n).unwrap();
+            Some(self.newlines[n - 1] + 1)
+        } else {
+            let n = usize::try_from(n).unwrap();
+            Some(self.newlines[n - 1] + 1)
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.newlines.len()
     }
 }
 
-pub static TRACKERS: OnceCell<Mutex<Tracker>> = OnceCell::new();
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use std::io::{BufReader, Cursor, Write};
+//     use tempfile::*;
 
-/// Resolves an index to a byte offset.
-///
-/// `None` means that the index refers to a position beyond the end of the file and we don't have
-/// enough information to resolve it yet.
-// TODO: Unit tests
-pub fn resolve_index(idx: Index) -> Result<Option<usize>> {
-    Ok(match idx {
-        Index::End => Some(FILE_LENGTH.load(Ordering::SeqCst) as usize),
-        Index::Byte(x) if x >= 0 => Some(x as usize),
-        Index::Byte(x) => Some(FILE_LENGTH.load(Ordering::SeqCst) as usize - (x.neg() as usize)),
-        Index::Idx(x) => TRACKERS.get().unwrap().lock().unwrap().lookup(x),
-    })
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
-
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("Unknown index")]
-    UnknownIndex,
-    #[error("Expected another token")]
-    NotEnoughTokens,
-    #[error("{0}")]
-    Io(#[from] std::io::Error),
-    #[error("{0}")]
-    Int(#[from] std::num::ParseIntError),
-}
+//     #[test]
+//     fn test() {
+//         let mut f = NamedTempFile::new().unwrap();
+//         let s = b"foo,bar\n1,2\n3,4\n";
+//         f.write_all(s).unwrap();
+//         let lines = DenseIndex::from_file(f.path()).unwrap();
+//         assert_eq!(lines.len(), 3);
+//         // line2range never includes the newline char, hence the non-contiguous
+//         // ranges
+//         assert_eq!(lines.line2range(0), 0..7);
+//         assert_eq!(lines.line2range(1), 8..11);
+//         assert_eq!(lines.line2range(2), 12..15);
+//         assert_eq!(s.len(), 16);
+//     }
+// }
