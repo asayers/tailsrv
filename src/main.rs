@@ -1,5 +1,4 @@
 pub mod proto;
-pub mod index;
 
 use crate::proto::*;
 use inotify::*;
@@ -66,33 +65,6 @@ async fn main() {
             WatchMask::MODIFY | WatchMask::DELETE_SELF | WatchMask::MOVE_SELF,
         )
         .unwrap();
-
-    info!("Peforming initial index of file...");
-    let delim = if opts.zero_terminated { 0 } else { b'\n' };
-    TRACKERS
-        .set(Mutex::new(
-            crate::index::DenseIndex::new(&opts.path, delim).unwrap(),
-        ))
-        .map_err(|_| "Tried to set trackers twice")
-        .unwrap();
-    info!("Done");
-
-    {
-        let mut rx = rx.clone();
-        let zero_terminated = opts.zero_terminated;
-        tokio::task::spawn(async move {
-            while rx.changed().await.is_ok() {
-                info!("Updating trackers...");
-                let mut trackers = TRACKERS.get().unwrap().lock().unwrap();
-                trackers.update().unwrap();
-                info!(
-                    "Finished updating trackers: {} {}",
-                    trackers.len(),
-                    if zero_terminated { "zeroes" } else { "lines" },
-                );
-            }
-        });
-    }
 
     {
         // Start the file-watching task

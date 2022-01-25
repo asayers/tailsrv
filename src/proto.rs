@@ -1,11 +1,10 @@
-use crate::tracker::Tracker;
 use crate::FILE_LENGTH;
 use log::*;
 use once_cell::sync::OnceCell;
 use std::{
     ops::Neg,
     str::FromStr,
-    sync::{atomic::Ordering, Mutex},
+    sync::atomic::Ordering,
 };
 use thiserror::*;
 
@@ -13,7 +12,6 @@ use thiserror::*;
 pub enum Req {
     End,
     Byte(i64),
-    Idx(i64),
 }
 
 // TODO: Unit tests
@@ -24,7 +22,7 @@ impl FromStr for Req {
         let mut token = || tokens.next().ok_or(Error::NotEnoughTokens);
         let first = token()?;
         if let Ok(x) = first.parse::<i64>() {
-            return Ok(Req::Idx(x));
+            return Ok(Req::Byte(x));
         }
         match first {
             "" | "end" => Ok(Req::End),
@@ -33,8 +31,6 @@ impl FromStr for Req {
         }
     }
 }
-
-pub static TRACKERS: OnceCell<Mutex<Tracker>> = OnceCell::new();
 
 /// Resolves an index to a byte offset.
 ///
@@ -46,7 +42,6 @@ pub fn resolve_index(idx: Req) -> Result<Option<usize>> {
         Req::End => Some(FILE_LENGTH.load(Ordering::SeqCst) as usize),
         Req::Byte(x) if x >= 0 => Some(x as usize),
         Req::Byte(x) => Some(FILE_LENGTH.load(Ordering::SeqCst) as usize - (x.neg() as usize)),
-        Req::Idx(x) => TRACKERS.get().unwrap().lock().unwrap().lookup(x),
     })
 }
 
