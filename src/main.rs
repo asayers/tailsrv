@@ -2,7 +2,6 @@ use clap::Parser;
 use inotify::*;
 use log::*;
 use std::{
-    convert::TryFrom,
     env::*,
     fs::File,
     net::SocketAddr,
