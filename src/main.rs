@@ -1,19 +1,11 @@
 use clap::Parser;
 use inotify::*;
-use std::{
-    env::*,
-    fs::File,
-    net::SocketAddr,
-    os::unix::{io::AsRawFd, prelude::RawFd},
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex,
-    },
-};
-use tokio::io::{unix::AsyncFd, AsyncBufReadExt, BufReader};
-use tokio::net::TcpStream;
-use tokio::sync::watch;
+use std::fs::File;
+use std::net::SocketAddr;
+use std::ops::Neg;
+use std::os::unix::{io::AsRawFd, prelude::RawFd};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::*;
 
 #[derive(Parser)]
@@ -90,7 +82,12 @@ async fn main_2(opts: Opts) -> Result<()> {
         let rx = rx.clone();
         tokio::task::spawn(async move {
             let span = info_span!("client", %addr);
-            handle_client(sock, file_fd, rx.clone())).instrument(span);
+            match handle_client(sock, file_fd, rx).instrument(span).await {
+                Ok(()) => (),
+                Err(e) => {
+                    error!("{}", e);
+                }
+            }
         });
     }
 }
@@ -112,9 +109,9 @@ async fn read_header(sock: &mut tokio::net::TcpStream) -> Result<i64> {
 }
 
 async fn handle_client(
-    mut sock: TcpStream,
+    mut sock: tokio::net::TcpStream,
     fd: RawFd,
-    mut rx: watch::Receiver<()>,
+    mut rx: tokio::sync::watch::Receiver<()>,
 ) -> Result<()> {
     info!("Connected");
     // The first thing the client will do is send a header
