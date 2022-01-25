@@ -1,3 +1,4 @@
+use clap::Parser;
 use inotify::*;
 use log::*;
 use std::{
@@ -12,26 +13,25 @@ use std::{
         Mutex,
     },
 };
-use structopt::StructOpt;
 use tokio::io::{unix::AsyncFd, AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 
-#[derive(StructOpt)]
+#[derive(Parser)]
 struct Opts {
     /// The file which will be broadcast to all clients
     path: PathBuf,
     /// The port number on which to listen for new connections
-    #[structopt(long, short)]
+    #[clap(long, short)]
     port: u16,
     /// Don't produce output unless there's a problem
-    #[structopt(long, short)]
+    #[clap(long, short)]
     quiet: bool,
     /// Line delimiter is NUL, not newline
-    #[structopt(long, short)]
+    #[clap(long, short)]
     zero_terminated: bool,
     /// Use the binary protocol instead of text
-    #[structopt(long, short)]
+    #[clap(long, short)]
     binary_proto: bool,
 }
 
@@ -40,7 +40,7 @@ pub static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
 #[tokio::main]
 async fn main() {
     // Define CLI options
-    let opts = Opts::from_args();
+    let opts = Opts::parse();
 
     // Init logger
     let log_level = if opts.quiet {

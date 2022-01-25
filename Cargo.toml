@@ -9,9 +9,9 @@ authors = ["Alex Sayers <alex.sayers@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+clap = { version = "3.0.10", features = ["derive"] }
 inotify = "0.9.3"
 log = "0.4.14"
 loggerv = "0.7.2"
 nix = "0.22.0"
-structopt = "0.3.22"
 tokio = { version = "1.9.0", features = ["full"] }
