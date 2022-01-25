@@ -1,6 +1,5 @@
 use clap::Parser;
 use inotify::*;
-use log::*;
 use std::{
     env::*,
     fs::File,
@@ -15,6 +14,7 @@ use std::{
 use tokio::io::{unix::AsyncFd, AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
+use tracing::*;
 
 #[derive(Parser)]
 struct Opts {
@@ -42,8 +42,6 @@ type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 pub static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
 
 async fn main_2(opts: Opts) -> Result<()> {
-    loggerv::init_with_level(LogLevel::Info)?;
-
     let file = File::open(&opts.path)?;
     let file_fd = file.as_raw_fd();
     let file_len = file.metadata()?.len();
@@ -89,8 +87,11 @@ async fn main_2(opts: Opts) -> Result<()> {
     info!("Serving file {} on {}", opts.path.display(), listen_addr);
     loop {
         let (sock, addr) = listener.accept().await?;
-        info!("{}: New client connected", addr);
-        tokio::task::spawn(handle_client(sock, file_fd, rx.clone()));
+        let rx = rx.clone();
+        tokio::task::spawn(async move {
+            let span = info_span!("client", %addr);
+            handle_client(sock, file_fd, rx.clone())).instrument(span);
+        });
     }
 }
 
