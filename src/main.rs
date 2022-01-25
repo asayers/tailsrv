@@ -86,11 +86,7 @@ async fn main_2(opts: Opts) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&listen_addr)
         .await
         .expect("Bind listen sock");
-    info!(
-        "Serving files from {} on {}",
-        current_dir()?.display(),
-        listen_addr
-    );
+    info!("Serving file {} on {}", opts.path.display(), listen_addr);
     loop {
         let (sock, addr) = listener.accept().await?;
         info!("{}: New client connected", addr);
@@ -104,9 +100,7 @@ async fn read_header(sock: &mut tokio::net::TcpStream) -> Result<i64> {
     // TODO: length limit
     let mut buf = String::new();
     tokio::io::BufReader::new(sock).read_line(&mut buf).await?;
-    info!("Client sent header bytes {:?}", &buf);
     let header: i64 = buf.as_str().trim().parse()?;
-    info!("Client sent header {:?}", idx);
     // Resolve the header to a byte offset
     if header >= 0 {
         Ok(header)
@@ -121,18 +115,20 @@ async fn handle_client(
     fd: RawFd,
     mut rx: watch::Receiver<()>,
 ) -> Result<()> {
+    info!("Connected");
     // The first thing the client will do is send a header
     let mut offset = read_header(&mut sock).await?;
+    info!("Starting from offset {}", offset);
     loop {
         sock.writable().await?;
-        info!("Socket has become writable");
+        debug!("Socket has become writable");
         // How many bytes the client wants
         let file_len = FILE_LENGTH.load(Ordering::SeqCst);
         let wanted = i64::try_from(file_len)? - offset;
         if wanted <= 0 {
             // We're all caught-up.  Wait for new data to be written
             // to the file before continuing.
-            info!("Waiting for changes");
+            debug!("Waiting for changes");
             match rx.changed().await {
                 Ok(()) => continue,
                 Err(_) => {
@@ -153,7 +149,7 @@ async fn handle_client(
         // How many bytes the client will get
         let cnt = usize::try_from(wanted.min(CHUNK_SIZE))?;
 
-        info!("Sending {} bytes from offset {}", cnt, offset);
+        debug!("Sending {} bytes from offset {}", cnt, offset);
         let ret = sock.try_io(tokio::io::Interest::WRITABLE, || {
             nix::sys::sendfile::sendfile(sock.as_raw_fd(), fd, Some(&mut offset), cnt)
                 .map_err(std::io::Error::from)
