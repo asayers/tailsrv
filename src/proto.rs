@@ -10,7 +10,6 @@ use thiserror::*;
 
 #[derive(Debug)]
 pub enum Req {
-    End,
     Byte(i64),
 }
 
@@ -25,7 +24,6 @@ impl FromStr for Req {
             return Ok(Req::Byte(x));
         }
         match first {
-            "" | "end" => Ok(Req::End),
             "byte" => Ok(Req::Byte(token()?.parse()?)),
             _ => Err(Error::UnknownIndex),
         }
@@ -36,7 +34,6 @@ impl FromStr for Req {
 // TODO: Unit tests
 pub fn resolve_index(idx: Req) -> Result<usize> {
     Ok(match idx {
-        Req::End => FILE_LENGTH.load(Ordering::SeqCst) as usize,
         Req::Byte(x) if x >= 0 => x as usize,
         Req::Byte(x) => FILE_LENGTH.load(Ordering::SeqCst) as usize - (x.neg() as usize),
     })
