@@ -33,15 +33,12 @@ impl FromStr for Req {
 }
 
 /// Resolves an index to a byte offset.
-///
-/// `None` means that the index refers to a position beyond the end of the file and we don't have
-/// enough information to resolve it yet.
 // TODO: Unit tests
-pub fn resolve_index(idx: Req) -> Result<Option<usize>> {
+pub fn resolve_index(idx: Req) -> Result<usize> {
     Ok(match idx {
-        Req::End => Some(FILE_LENGTH.load(Ordering::SeqCst) as usize),
-        Req::Byte(x) if x >= 0 => Some(x as usize),
-        Req::Byte(x) => Some(FILE_LENGTH.load(Ordering::SeqCst) as usize - (x.neg() as usize)),
+        Req::End => FILE_LENGTH.load(Ordering::SeqCst) as usize,
+        Req::Byte(x) if x >= 0 => x as usize,
+        Req::Byte(x) => FILE_LENGTH.load(Ordering::SeqCst) as usize - (x.neg() as usize),
     })
 }
 

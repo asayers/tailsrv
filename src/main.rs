@@ -128,13 +128,7 @@ async fn handle_client(
         buf.parse::<Req>().unwrap()
     };
     info!("Client sent header {:?}", idx);
-    // OK! This client will start watching a file. Let's remove
-    // it from the nursery and change its epoll parameters.
-    // TODO: If resolving returns `None`, we should re-resolve it every time there's new data.
-    let initial_offset = match resolve_index(idx).expect("index") {
-        Some(x) => i64::try_from(x).unwrap(),
-        None => todo!("Wait for index to be available"),
-    };
+    let initial_offset = i64::try_from(resolve_index(idx).expect("index")).unwrap();
 
     let mut offset = initial_offset;
     loop {
