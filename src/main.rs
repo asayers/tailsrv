@@ -1,5 +1,5 @@
 use clap::Parser;
-use inotify::*;
+use notify::Watcher;
 use std::fs::File;
 use std::net::SocketAddr;
 use std::ops::Neg;
@@ -42,39 +42,26 @@ async fn main_2(opts: Opts) -> Result<()> {
     let file_fd = file.as_raw_fd();
     let file_len = file.metadata()?.len();
     FILE_LENGTH.store(file_len, Ordering::SeqCst);
-    let (tx, rx) = watch::channel::<()>(());
-    let mut inotify = Inotify::init()?;
-    inotify
-        .add_watch(
-            &opts.path,
-            WatchMask::MODIFY | WatchMask::DELETE_SELF | WatchMask::MOVE_SELF,
-        )
-        ?;
 
-    {
-        // Start the file-watching task
-        let inotify_fd = AsyncFd::new(inotify.as_raw_fd())?;
-        let mut inotify_buf = vec![0; 4096];
-        tokio::task::spawn(async move {
-            loop {
-                let mut guard = inotify_fd.readable().await.unwrap();
-                for ev in inotify.read_events(&mut inotify_buf).unwrap() {
-                    if ev.mask.contains(EventMask::MODIFY) {
-                        let file_len = file.metadata().unwrap().len();
-                        info!("{:?}: File length is now {}", ev.wd, file_len);
-                        FILE_LENGTH.store(file_len, Ordering::SeqCst);
-                        tx.send(()).unwrap();
-                    } else if ev.mask.contains(EventMask::DELETE_SELF)
-                        || ev.mask.contains(EventMask::MOVE_SELF)
-                    {
-                        info!("Watched file disappeared");
-                        std::process::exit(0);
-                    }
+    let (tx, rx) = tokio::sync::watch::channel::<()>(());
+    let mut watcher =
+        notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
+            use notify::{event::ModifyKind, EventKind};
+            match event.unwrap().kind {
+                EventKind::Modify(ModifyKind::Data(_)) => {
+                    let file_len = file.metadata().unwrap().len();
+                    info!("File length is now {}", file_len);
+                    FILE_LENGTH.store(file_len, Ordering::SeqCst);
+                    tx.send(()).unwrap();
                 }
-                guard.clear_ready();
+                EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)) => {
+                    info!("Watched file disappeared");
+                    std::process::exit(0);
+                }
+                _ => (),
             }
-        });
-    }
+        })?;
+    watcher.watch(&opts.path, notify::RecursiveMode::NonRecursive)?;
 
     let listen_addr = SocketAddr::new([0, 0, 0, 0].into(), opts.port);
     let listener = tokio::net::TcpListener::bind(&listen_addr)
