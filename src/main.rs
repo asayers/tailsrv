@@ -35,6 +35,10 @@ pub static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
 
 async fn main_2(opts: Opts) -> Result<()> {
     let file = File::open(&opts.path)?;
+    if !file.metadata()?.is_file() {
+        return Err(format!("{}: Not a file", opts.path.display()).into());
+    }
+
     let file_fd = file.as_raw_fd();
     let file_len = file.metadata()?.len();
     FILE_LENGTH.store(file_len, Ordering::SeqCst);
