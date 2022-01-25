@@ -99,27 +99,31 @@ async fn main_2(opts: Opts) -> Result<()> {
     }
 }
 
+async fn read_header(sock: &mut tokio::net::TcpStream) -> Result<i64> {
+    use tokio::io::AsyncBufReadExt;
+    // TODO: timeout
+    // TODO: length limit
+    let mut buf = String::new();
+    tokio::io::BufReader::new(sock).read_line(&mut buf).await?;
+    info!("Client sent header bytes {:?}", &buf);
+    let header: i64 = buf.as_str().trim().parse()?;
+    info!("Client sent header {:?}", idx);
+    // Resolve the header to a byte offset
+    if header >= 0 {
+        Ok(header)
+    } else {
+        let cur_len = i64::try_from(FILE_LENGTH.load(Ordering::SeqCst))?;
+        Ok(cur_len - header.neg())
+    }
+}
+
 async fn handle_client(
     mut sock: TcpStream,
     fd: RawFd,
     mut rx: watch::Receiver<()>,
 ) -> Result<()> {
     // The first thing the client will do is send a header
-    // TODO: timeout
-    // TODO: length limit
-    let mut buf = String::new();
-    tokio::io::BufReader::new(sock).read_line(&mut buf).await?;
-    info!("Client sent header bytes {:?}", &buf);
-    let idx = buf.as_str().trim().parse()?;
-    info!("Client sent header {:?}", idx);
-    let initial_offset = if header >= 0 {
-        Ok(header)
-    } else {
-        let cur_len = i64::try_from(FILE_LENGTH.load(Ordering::SeqCst))?;
-        Ok(cur_len - header.neg())
-    };
-
-    let mut offset = initial_offset;
+    let mut offset = read_header(&mut sock).await?;
     loop {
         sock.writable().await?;
         info!("Socket has become writable");
