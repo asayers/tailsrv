@@ -26,31 +26,41 @@ struct Opts {
     port: u16,
 }
 
-pub static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
-
 #[tokio::main]
 async fn main() {
-    // Define CLI options
-    let opts = Opts::parse();
+    tracing_subscriber::fmt::init();
+    match main_2(Opts::parse()).await {
+        Ok(()) => (),
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+}
 
-    loggerv::init_with_level(LogLevel::Info).unwrap();
+type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
-    let file = File::open(&opts.path).unwrap();
+pub static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
+
+async fn main_2(opts: Opts) -> Result<()> {
+    loggerv::init_with_level(LogLevel::Info)?;
+
+    let file = File::open(&opts.path)?;
     let file_fd = file.as_raw_fd();
-    let file_len = file.metadata().unwrap().len();
+    let file_len = file.metadata()?.len();
     FILE_LENGTH.store(file_len, Ordering::SeqCst);
     let (tx, rx) = watch::channel::<()>(());
-    let mut inotify = Inotify::init().unwrap();
+    let mut inotify = Inotify::init()?;
     inotify
         .add_watch(
             &opts.path,
             WatchMask::MODIFY | WatchMask::DELETE_SELF | WatchMask::MOVE_SELF,
         )
-        .unwrap();
+        ?;
 
     {
         // Start the file-watching task
-        let inotify_fd = AsyncFd::new(inotify.as_raw_fd()).unwrap();
+        let inotify_fd = AsyncFd::new(inotify.as_raw_fd())?;
         let mut inotify_buf = vec![0; 4096];
         tokio::task::spawn(async move {
             loop {
@@ -79,11 +89,11 @@ async fn main() {
         .expect("Bind listen sock");
     info!(
         "Serving files from {} on {}",
-        current_dir().unwrap().display(),
+        current_dir()?.display(),
         listen_addr
     );
     loop {
-        let (sock, addr) = listener.accept().await.unwrap();
+        let (sock, addr) = listener.accept().await?;
         info!("{}: New client connected", addr);
         tokio::task::spawn(handle_client(sock, file_fd, rx.clone()));
     }
@@ -93,14 +103,14 @@ async fn handle_client(
     mut sock: TcpStream,
     fd: RawFd,
     mut rx: watch::Receiver<()>,
-) {
+) -> Result<()> {
     // The first thing the client will do is send a header
     // TODO: timeout
     // TODO: length limit
     let mut buf = String::new();
     tokio::io::BufReader::new(sock).read_line(&mut buf).await?;
     info!("Client sent header bytes {:?}", &buf);
-    let idx = buf.as_str().trim().parse()?.unwrap();
+    let idx = buf.as_str().trim().parse()?;
     info!("Client sent header {:?}", idx);
     let initial_offset = if header >= 0 {
         Ok(header)
@@ -111,11 +121,11 @@ async fn handle_client(
 
     let mut offset = initial_offset;
     loop {
-        sock.writable().await.unwrap();
+        sock.writable().await?;
         info!("Socket has become writable");
         // How many bytes the client wants
         let file_len = FILE_LENGTH.load(Ordering::SeqCst);
-        let wanted = i64::try_from(file_len).unwrap() - offset;
+        let wanted = i64::try_from(file_len)? - offset;
         if wanted <= 0 {
             // We're all caught-up.  Wait for new data to be written
             // to the file before continuing.
@@ -126,7 +136,7 @@ async fn handle_client(
                     // The sender is gone.  This means that the file has
                     // been deleted.
                     info!("Closing socket: file was deleted");
-                    return;
+                    return Ok(());
                 }
             }
         }
@@ -138,7 +148,7 @@ async fn handle_client(
         /// to hurt reaction latency for other clients.
         const CHUNK_SIZE: i64 = 1024 * 1024;
         // How many bytes the client will get
-        let cnt = usize::try_from(wanted.min(CHUNK_SIZE)).unwrap();
+        let cnt = usize::try_from(wanted.min(CHUNK_SIZE))?;
 
         info!("Sending {} bytes from offset {}", cnt, offset);
         let ret = sock.try_io(tokio::io::Interest::WRITABLE, || {
@@ -150,7 +160,7 @@ async fn handle_client(
                 std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset => {
                     // The client hung up
                     info!("Socket closed by other side");
-                    return;
+                    return Ok(());
                 }
                 std::io::ErrorKind::WouldBlock => {
                     // The socket is not writeable. Wait for it to become writable
