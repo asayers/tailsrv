@@ -24,15 +24,6 @@ struct Opts {
     /// The port number on which to listen for new connections
     #[clap(long, short)]
     port: u16,
-    /// Don't produce output unless there's a problem
-    #[clap(long, short)]
-    quiet: bool,
-    /// Line delimiter is NUL, not newline
-    #[clap(long, short)]
-    zero_terminated: bool,
-    /// Use the binary protocol instead of text
-    #[clap(long, short)]
-    binary_proto: bool,
 }
 
 pub static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
@@ -42,13 +33,7 @@ async fn main() {
     // Define CLI options
     let opts = Opts::parse();
 
-    // Init logger
-    let log_level = if opts.quiet {
-        log::Level::Warn
-    } else {
-        log::Level::Info
-    };
-    loggerv::init_with_level(log_level).unwrap();
+    loggerv::init_with_level(LogLevel::Info).unwrap();
 
     let file = File::open(&opts.path).unwrap();
     let file_fd = file.as_raw_fd();
@@ -100,28 +85,22 @@ async fn main() {
     loop {
         let (sock, addr) = listener.accept().await.unwrap();
         info!("{}: New client connected", addr);
-        tokio::task::spawn(handle_client(opts.binary_proto, sock, file_fd, rx.clone()));
+        tokio::task::spawn(handle_client(sock, file_fd, rx.clone()));
     }
 }
 
 async fn handle_client(
-    binary_proto: bool,
     mut sock: TcpStream,
     fd: RawFd,
     mut rx: watch::Receiver<()>,
 ) {
     // The first thing the client will do is send a header
     // TODO: timeout
-    let idx = if binary_proto {
-        use tokio::io::AsyncReadExt;
-        sock.read_i64().await.unwrap()
-    } else {
-        // TODO: length limit
-        let mut buf = String::new();
-        tokio::io::BufReader::new(sock).read_line(&mut buf).await?;
-        info!("Client sent header bytes {:?}", &buf);
-        buf.as_str().trim().parse()?.unwrap()
-    };
+    // TODO: length limit
+    let mut buf = String::new();
+    tokio::io::BufReader::new(sock).read_line(&mut buf).await?;
+    info!("Client sent header bytes {:?}", &buf);
+    let idx = buf.as_str().trim().parse()?.unwrap();
     info!("Client sent header {:?}", idx);
     let initial_offset = if header >= 0 {
         Ok(header)
