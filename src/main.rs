@@ -1,6 +1,3 @@
-pub mod proto;
-
-use crate::proto::*;
 use inotify::*;
 use log::*;
 use std::{
@@ -117,18 +114,21 @@ async fn handle_client(
     // TODO: timeout
     let idx = if binary_proto {
         use tokio::io::AsyncReadExt;
-        let idx = sock.read_i64().await.unwrap();
-        Req::Idx(idx)
+        sock.read_i64().await.unwrap()
     } else {
         // TODO: length limit
-        // TODO: async
         let mut buf = String::new();
-        BufReader::new(&mut sock).read_line(&mut buf).await.unwrap();
+        tokio::io::BufReader::new(sock).read_line(&mut buf).await?;
         info!("Client sent header bytes {:?}", &buf);
-        buf.parse::<Req>().unwrap()
+        buf.as_str().trim().parse()?.unwrap()
     };
     info!("Client sent header {:?}", idx);
-    let initial_offset = i64::try_from(resolve_index(idx).expect("index")).unwrap();
+    let initial_offset = if header >= 0 {
+        Ok(header)
+    } else {
+        let cur_len = i64::try_from(FILE_LENGTH.load(Ordering::SeqCst))?;
+        Ok(cur_len - header.neg())
+    };
 
     let mut offset = initial_offset;
     loop {
