@@ -34,7 +34,18 @@ type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 pub static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
 
 async fn main_2(opts: Opts) -> Result<()> {
-    let file = File::open(&opts.path)?;
+    let file = loop {
+        match File::open(&opts.path) {
+            Ok(f) => break f,
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    info!("{}: Waiting for flie to be created", opts.path.display());
+                    std::thread::sleep(std::time::Duration::from_secs(10))
+                }
+                _ => return Err(e.into()),
+            },
+        }
+    };
     if !file.metadata()?.is_file() {
         return Err(format!("{}: Not a file", opts.path.display()).into());
     }
@@ -42,6 +53,10 @@ async fn main_2(opts: Opts) -> Result<()> {
     let file_fd = file.as_raw_fd();
     let file_len = file.metadata()?.len();
     FILE_LENGTH.store(file_len, Ordering::SeqCst);
+    info!(
+        "{}: Opened file.  Initial length is {file_len}",
+        opts.path.display()
+    );
 
     let (tx, rx) = tokio::sync::watch::channel::<()>(());
     let mut watcher =
