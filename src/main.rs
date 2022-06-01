@@ -129,12 +129,6 @@ async fn handle_client(
             }
         }
 
-        /// The maximum number of bytes which will be `sendfile()`'d to a client before moving onto the
-        /// next waiting client.
-        ///
-        /// A bigger size increases total throughput, but may allow a client who is reading a lot of data
-        /// to hurt reaction latency for other clients.
-        const CHUNK_SIZE: i64 = 1024 * 1024;
         // How many bytes the client will get
         let cnt = usize::try_from(wanted.min(CHUNK_SIZE))?;
 
@@ -157,5 +151,24 @@ async fn handle_client(
                 _ => panic!("{}", e),
             }
         }
+    }
+}
+
+/// The maximum number of bytes which will be `sendfile()`'d to a client
+/// before moving onto the next waiting client.
+///
+/// A bigger size increases total throughput, but may allow a client who is
+/// reading a lot of data to hurt reaction latency for other clients.
+const CHUNK_SIZE: i64 = 1024 * 1024;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_size_limit() {
+        // Make sure CHUNK_SIZE is less than 0x7ffff000, which is the maximum
+        // the Linux kernel will write in a single call.
+        assert!(CHUNK_SIZE < 0x7ffff000);
     }
 }
