@@ -47,34 +47,41 @@ shutting down.  If the watched file is deleted or moved, tailsrv will exit.
 
 ### Example
 
-Let's say the machine is called `logserver`.  Pick a port number and start
-tailsrv:
+Let's say you have a machine called `webserver`.  Pick a port number and
+start tailsrv:
 
 ```console
 $ tailsrv -p 4321 /var/log/nginx/access.log
 ```
 
-Now that tailsrv is running, the following commands will do roughly the
-same thing:
+tailsrv is now watching access.log.  You can now connect to it from your
+laptop and stream the contents of the file:
 
 ```console
-$ ssh logserver -- tail -f -n+1000 /var/log/nginx/access.log
-$ echo "1000" | nc logserver 4321
+$ echo "1000" | nc webserver 4321
+```
+
+You should see access.log, starting at byte 1000, and it will stream new
+contents as they come in.  It's more-or-less the same as if you did this:
+
+```console
+$ ssh webserver -- tail -f -c+1000 /var/log/nginx/access.log
 ```
 
 Rather than using netcat, however, you probably want to connect to tailsrv
 directly from your log-consuming application. This is very easy:
 
 ```rust
-let sock = TcpStream::connect("logserver:4321")?;
+let sock = TcpStream::connect("webserver:4321")?;
 writeln!(sock, "{}", 1000)?;
 for line in BufReader::new(sock).lines() {
     /* handle log data */
 }
 ```
 
-The example above is written in rust, but you can connect to tailsrv from any
-programming language without the need for a special client library.
+The example above is written in rust, but as you can see very straightforward.
+You can to do this from any programming language without the need for a
+special client library.
 
 
 ## Performance
