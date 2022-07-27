@@ -140,22 +140,30 @@ coming from eg. Kafka.
 [wireguard]: https://www.wireguard.com
 
 
-## Using tailsrv as a Kafka alternative
+## tailsrv vs Kafka
 
-Perhaps you want to write all your log-structured data to one place, and then
-consume it elsewhere?  This Kafka-style approach to data processing has become
-popular lately, and tailsrv can function as a component in such a setup.
+Kafka does something very similar to tailsrv, but is designed to handle
+throughputs which would be too much for a single fileserver.  If you're in
+that kind of situation, then I'm sorry!  You're about to give up a lot of
+nice things in the name of horizontal scalability.  Kafka can help ease the
+pain a little.
 
-tailsrv will allow consumers to connect to your log server, but it doesn't help
-you get data onto it in the first place - for this task you'll need to use
-something else.  Here are some ideas:
+If you _can_ handle everything with a single node though, you're in luck!
+You can get away with tailsrv, which is about a million times easier to
+set up and manage.
 
-* For data which should be streamed with low latency, how about
-  `producerprog | ssh logserver "cat >> logfile"`?
-* For data which can be written in batches, how about writing it locally and
-  then periodically running `rsync --append`?
-* If you're happy to invert the direction of control, how about running
-  `nc producerserver 5432 >> logfile` on the logserver?
+### Fan-in
+
+Kafka provides an API for reading streams, and also an API for writing to
+them.  tailsrv only does the reading side: it doesn't help you coalesce data.
+For this you'll need to roll your own solution.
+
+If your data comes from a single process on a single machine, it's dead easy:
+you just need to get the data over to the fileserver somehow.  If your data
+comes from multiple sources and needs to be carefully aggregated into a single
+stream, then you'll need to run another piece of software on fileserver
+which accepts connections from your producers and writes the collated data
+into a file.
 
 
 ## Licence
