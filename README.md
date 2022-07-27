@@ -142,17 +142,29 @@ coming from eg. Kafka.
 
 ## tailsrv vs Kafka
 
-Kafka does something very similar to tailsrv, but is designed to handle
-throughputs which would be too much for a single fileserver.  If you're in
-that kind of situation, then I'm sorry!  You're about to give up a lot of
-nice things in the name of horizontal scalability.  Kafka can help ease the
-pain a little.
+Kafka does three things:
+
+1. **Collating** messages from multiple producers into a single stream
+2. **Indexing** streams by message number
+3. **Broadcasting** streams to consumers
+
+(Actually Kafka does many many things, but these are the main ones.)
+
+tailsrv only handles broadcasting.  If you need collating or indexing
+functionality, you should roll some software for that yourself and run it
+alongside tailsrv on the fileserver.
+
+### Horizontal scalability
+
+Kafka is designed to handle throughputs which would be too much for a
+single fileserver.  If you're in that kind of situation, then I'm sorry!
+Kafka may help ease the pain a little.
 
 If you _can_ handle everything with a single node though, you're in luck!
 You can get away with tailsrv, which is about a million times easier to
 set up and manage.
 
-### Fan-in
+### Collating
 
 Kafka provides an API for reading streams, and also an API for writing to
 them.  tailsrv only does the reading side: it doesn't help you coalesce data.
@@ -164,6 +176,17 @@ comes from multiple sources and needs to be carefully aggregated into a single
 stream, then you'll need to run another piece of software on fileserver
 which accepts connections from your producers and writes the collated data
 into a file.
+
+### Indexing
+
+Kafka's abstraction is "streams of messages", whereas tailsrv's abstraction is
+"a stream of bytes".  If you want to chop your stream up into messages, just
+do that however you'd like (newline-delimited, length-prefixed, etc. etc.).
+However, tailsrv doesn't know about your messages, so can't provide indexing
+for them.  This means that, if you want to start reading from a certain
+message, you have to know its byte-offset.  You could do this with another
+piece of software on the fileserver (an indexer).  Kafka does this for you,
+but tailsrv doesn't so you'll have to roll your own.
 
 
 ## Licence
