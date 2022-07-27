@@ -10,8 +10,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "3.2.15", features = ["derive"] }
+inotify = { version = "0.10.0", default-features = false }
 nix = "0.24.2"
-notify = "5.0.0-pre.15"
-tokio = { version = "1.20.1", features = ["full"] }
 tracing = "0.1.35"
 tracing-subscriber = "0.3.6"

@@ -1,11 +1,13 @@
 use clap::Parser;
-use notify::Watcher;
+use inotify::{EventMask, Inotify, WatchMask};
 use std::fs::File;
-use std::net::SocketAddr;
-use std::ops::Neg;
+use std::io::BufRead;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::{io::AsRawFd, prelude::RawFd};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::Thread;
 use tracing::*;
 
 #[derive(Parser)]
@@ -17,173 +19,165 @@ struct Opts {
     port: u16,
 }
 
-#[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt::init();
-    match main_2(Opts::parse()).await {
-        Ok(()) => (),
-        Err(e) => {
-            eprintln!("{}", e);
-            std::process::exit(1);
-        }
-    };
-}
-
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 pub static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
 
-async fn main_2(opts: Opts) -> Result<()> {
-    let file = loop {
-        match File::open(&opts.path) {
-            Ok(f) => break f,
-            Err(e) => match e.kind() {
-                std::io::ErrorKind::NotFound => {
-                    info!("{}: Waiting for flie to be created", opts.path.display());
-                    std::thread::sleep(std::time::Duration::from_secs(10))
-                }
-                _ => return Err(e.into()),
-            },
+fn main() -> Result<()> {
+    let opts = Opts::parse();
+    tracing_subscriber::fmt::init();
+
+    let file;
+    let mut inotify;
+    let threads: Arc<Mutex<Vec<Thread>>> = Arc::new(Mutex::new(vec![]));
+
+    // Open the file and set up the inotify watch
+    {
+        let _g = info_span!("file", path = %opts.path.display()).entered();
+        file = loop {
+            match File::open(&opts.path) {
+                Ok(f) => break f,
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::NotFound => {
+                        info!("Waiting for file to be created");
+                        std::thread::sleep(std::time::Duration::from_secs(3))
+                    }
+                    _ => return Err(e.into()),
+                },
+            }
+        };
+        if !file.metadata()?.is_file() {
+            return Err(format!("{}: Not a file", opts.path.display()).into());
         }
-    };
-    if !file.metadata()?.is_file() {
-        return Err(format!("{}: Not a file", opts.path.display()).into());
+
+        let file_len = file.metadata()?.len();
+        FILE_LENGTH.store(file_len, Ordering::SeqCst);
+        info!("Opened file (initial length: {}kB)", file_len / 1024);
+
+        inotify = Inotify::init()?;
+        inotify.add_watch(
+            &opts.path,
+            WatchMask::MODIFY | WatchMask::DELETE_SELF | WatchMask::MOVE_SELF,
+        )?;
+        info!("Created an inotify watch");
     }
 
-    let file_fd = file.as_raw_fd();
-    let file_len = file.metadata()?.len();
-    FILE_LENGTH.store(file_len, Ordering::SeqCst);
-    info!(
-        "{}: Opened file.  Initial length is {file_len}",
-        opts.path.display()
-    );
+    // Bind the socket and start listening for client connections
+    {
+        let listen_addr = SocketAddr::new([0, 0, 0, 0].into(), opts.port);
+        let _g = info_span!("listener", addr = %listen_addr).entered();
+        let listener = TcpListener::bind(&listen_addr)?;
+        info!("Bound socket");
 
-    let (tx, rx) = tokio::sync::watch::channel::<()>(());
-    let mut watcher =
-        notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
-            use notify::{event::ModifyKind, EventKind};
-            match event.unwrap().kind {
-                EventKind::Modify(ModifyKind::Data(_)) => {
-                    let file_len = file.metadata().unwrap().len();
-                    info!("File length is now {}", file_len);
-                    FILE_LENGTH.store(file_len, Ordering::SeqCst);
-                    tx.send(()).unwrap();
-                }
-                EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)) => {
-                    info!("Watched file disappeared");
-                    std::process::exit(0);
-                }
-                _ => (),
-            }
-        })?;
-    watcher.watch(&opts.path, notify::RecursiveMode::NonRecursive)?;
+        let threads2 = threads.clone();
+        let file_fd = file.as_raw_fd();
+        std::thread::spawn(move || listen_for_clients(listener, threads2, file_fd));
+        info!("Handling client connections");
+    }
 
-    let listen_addr = SocketAddr::new([0, 0, 0, 0].into(), opts.port);
-    let listener = tokio::net::TcpListener::bind(&listen_addr)
-        .await
-        .expect("Bind listen sock");
-    info!("Serving file {} on {}", opts.path.display(), listen_addr);
+    // Monitor the file and wake up clients when it changes
     loop {
-        let (sock, addr) = listener.accept().await?;
-        let rx = rx.clone();
-        tokio::task::spawn(async move {
-            let span = info_span!("client", %addr);
-            match handle_client(sock, file_fd, rx).instrument(span).await {
-                Ok(()) => (),
-                Err(e) => {
-                    error!("{}", e);
+        let mut buf = [0; 1024];
+        let events = inotify.read_events_blocking(&mut buf).unwrap();
+        for ev in events {
+            if ev
+                .mask
+                .intersects(EventMask::IGNORED | EventMask::DELETE_SELF | EventMask::MOVE_SELF)
+            {
+                info!("Watched file disappeared");
+                std::process::exit(0);
+            } else if ev.mask.contains(EventMask::MODIFY) {
+                let file_len = file.metadata().unwrap().len();
+                debug!("File length is now {}", file_len);
+                FILE_LENGTH.store(file_len, Ordering::SeqCst);
+                for t in threads.lock().unwrap().iter() {
+                    t.unpark();
                 }
+            } else {
+                warn!("Unknown inotify event: {ev:?}");
             }
-        });
+        }
     }
 }
 
-async fn read_header(sock: &mut tokio::net::TcpStream) -> Result<i64> {
-    use tokio::io::AsyncBufReadExt;
+fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>, file_fd: i32) {
+    for conn in listener.incoming() {
+        let conn = match conn {
+            Ok(x) => x,
+            Err(e) => {
+                error!("Bad connection: {e}");
+                continue;
+            }
+        };
+        let threads2 = threads.clone();
+        let join_handle = std::thread::spawn(move || {
+            let _g = match conn.peer_addr() {
+                Ok(addr) => info_span!("client", %addr).entered(),
+                Err(e) => info_span!("client", no_addr = %e).entered(),
+            };
+            match handle_client(conn, file_fd) {
+                Ok(()) => (),
+                Err(e) => error!("{e}"),
+            }
+            threads2
+                .lock()
+                .unwrap()
+                .retain(|t| t.id() != std::thread::current().id());
+            info!("Cleaned up the thread");
+        });
+        threads.lock().unwrap().push(join_handle.thread().clone());
+    }
+    error!("Listening socket was closed!");
+    std::process::exit(1);
+}
+
+fn read_header(conn: &mut TcpStream) -> Result<i64> {
+    // Read the header
+    let mut buf = String::new();
+    std::io::BufReader::new(conn).read_line(&mut buf)?;
     // TODO: timeout
     // TODO: length limit
-    let mut buf = String::new();
-    tokio::io::BufReader::new(sock).read_line(&mut buf).await?;
+
+    // Parse the header (it's just a signed int)
     let header: i64 = buf.as_str().trim().parse()?;
+
     // Resolve the header to a byte offset
     if header >= 0 {
         Ok(header)
     } else {
-        let cur_len = i64::try_from(FILE_LENGTH.load(Ordering::SeqCst))?;
-        Ok(cur_len - header.neg())
+        let cur_len = FILE_LENGTH.load(Ordering::SeqCst);
+        Ok(i64::try_from(cur_len)? + header)
     }
 }
 
-async fn handle_client(
-    mut sock: tokio::net::TcpStream,
-    fd: RawFd,
-    mut rx: tokio::sync::watch::Receiver<()>,
-) -> Result<()> {
+fn handle_client(mut conn: TcpStream, fd: RawFd) -> Result<()> {
     info!("Connected");
     // The first thing the client will do is send a header
-    let mut offset = read_header(&mut sock).await?;
+    let mut offset = read_header(&mut conn)?;
     info!("Starting from offset {}", offset);
     loop {
-        sock.writable().await?;
-        debug!("Socket has become writable");
         // How many bytes the client wants
-        let file_len = FILE_LENGTH.load(Ordering::SeqCst);
-        let wanted = i64::try_from(file_len)? - offset;
-        if wanted <= 0 {
+        let file_len = FILE_LENGTH.load(Ordering::SeqCst) as usize;
+        let wanted = file_len.saturating_sub(offset as usize);
+        if wanted == 0 {
             // We're all caught-up.  Wait for new data to be written
             // to the file before continuing.
             debug!("Waiting for changes");
-            match rx.changed().await {
-                Ok(()) => continue,
-                Err(_) => {
-                    // The sender is gone.  This means that the file has
-                    // been deleted.
-                    info!("Closing socket: file was deleted");
-                    return Ok(());
+            std::thread::park();
+        } else {
+            debug!("Sending {wanted} bytes from offset {offset}");
+            if let Err(e) =
+                nix::sys::sendfile::sendfile(conn.as_raw_fd(), fd, Some(&mut offset), wanted)
+            {
+                match std::io::Error::from(e).kind() {
+                    std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset => {
+                        // The client hung up
+                        info!("Socket closed by other side");
+                        return Ok(());
+                    }
+                    _ => return Err(e.into()),
                 }
             }
         }
-
-        // How many bytes the client will get
-        let cnt = usize::try_from(wanted.min(CHUNK_SIZE))?;
-
-        debug!("Sending {} bytes from offset {}", cnt, offset);
-        let ret = sock.try_io(tokio::io::Interest::WRITABLE, || {
-            nix::sys::sendfile::sendfile(sock.as_raw_fd(), fd, Some(&mut offset), cnt)
-                .map_err(std::io::Error::from)
-        });
-        if let Err(e) = ret {
-            match e.kind() {
-                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset => {
-                    // The client hung up
-                    info!("Socket closed by other side");
-                    return Ok(());
-                }
-                std::io::ErrorKind::WouldBlock => {
-                    // The socket is not writeable. Wait for it to become writable
-                    // again before continuing.
-                }
-                _ => panic!("{}", e),
-            }
-        }
-    }
-}
-
-/// The maximum number of bytes which will be `sendfile()`'d to a client
-/// before moving onto the next waiting client.
-///
-/// A bigger size increases total throughput, but may allow a client who is
-/// reading a lot of data to hurt reaction latency for other clients.
-const CHUNK_SIZE: i64 = 1024 * 1024;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn chunk_size_limit() {
-        // Make sure CHUNK_SIZE is less than 0x7ffff000, which is the maximum
-        // the Linux kernel will write in a single call.
-        assert!(CHUNK_SIZE < 0x7ffff000);
     }
 }
