@@ -1,51 +1,25 @@
 # tailsrv
 
-tailsrv is a high-performance file-streaming server.  It's like `tail -f` in
-server form.  It has high throughput, low latency, and scales to lots of
-clients (see [Performance](#performance)).  Setup is very simple, and clients
-don't require a special library.  It is, however, Linux-only (see
-[Limitations](#limitations)).
+tailsrv watches a single file and streams its contents to multiple clients as it grows.
+It's like `tail -f`, but as a server.
 
-Here's how it works in a nutshell:
+* When a client connects, tailsrv sends it data from the file.
+* If there is no new data to send, tailsrv waits until the file grows.
+* If the socket is full, tailsrv waits for the client to consume some data before sending more.
+* Clients can specify an initial byte-offset when they connect.
 
-* When a client connects, it gives an initial byte offset to start.
-* tailsrv sends it data from the file until the client is full or up-to-date.
-* When the client becomes writable, it is sent more data.
-* When the file is appended to, the new data is sent to the clients.
+Some implementation details:
 
-Compared to a simple TCP connection between your producer and consumer, a
-tailsrv instance in the middle can be used to provide:
+* All data is sent using sendfile.  This means that data is sent by the kernel
+  directly from the pagecache to the network card.  No data is ever copied
+  into userspace.  This gives tailsrv really good throughput.  However,
+  it also means that tailsrv will only run on Linux.
+* We use inotify to track modifications to the file.  This means that if the
+  file is not growing (and no new clients are connecting) tailsrv does no work.
+* We spawn one thread per client.  This means that a slow client can recieve
+  data at its own pace, without affecting other clients.
 
-* **fan-in**: many producers can write to the same file.  (But take care with interleaving!)
-* **fan-out**:  many consumers can read the producer's output without stressing it.
-* **replay**:  go back in time though a socket's history.
-
-For a quick-start, see the [example usage](#example).
-
-
-## Usage
-
-Clients open a TCP connection and send a header.  This header should be
-a single signed integer, formatted as a decimal string, UTF8-encoded, and
-terminated with a newline.  The integer represents the byte offset at which
-to start.  If the value is negative, it is interpreted as meaning "counting
-back from the end of the file".  Examples:
-
-* `0\n` - start from the beginning of the file
-* `1000\n` - start from byte 1000
-* `-1000\n` - send the last 1000 bytes
-
-After sending a header, the client should start reading data from the socket.
-At all times, communication is one-way: first the client sends a header,
-then tailsrv sends some data.  tailsrv will send nothing until a newline is
-recieved, and once a newline has been recieved it will ignore anything sent
-by the client.  The client may unceremoniously hang up at any time.
-
-tailsrv will not terminate the connection for any reason, unless it is
-shutting down.  If the watched file is deleted or moved, tailsrv will exit.
-
-
-### Example
+## Usage example
 
 Let's say you have a machine called `webserver`.  Pick a port number and
 start tailsrv:
@@ -54,22 +28,24 @@ start tailsrv:
 $ tailsrv -p 4321 /var/log/nginx/access.log
 ```
 
-tailsrv is now watching access.log.  You can now connect to it from your
+tailsrv is now watching access.log.  You can connect to tailsrv from your
 laptop and stream the contents of the file:
 
 ```console
 $ echo "1000" | nc webserver 4321
 ```
 
-You should see access.log, starting at byte 1000, and it will stream new
-contents as they come in.  It's more-or-less the same as if you did this:
+You will immediately see the contents of access.log, starting from byte 1000,
+up to the end of the file.  The connection remains open, waiting for new data.
+As soon as nginx writes a line to access.log, it will appear on your laptop.
+It's more-or-less the same as if you did this:
 
 ```console
 $ ssh webserver -- tail -f -c+1000 /var/log/nginx/access.log
 ```
 
 Rather than using netcat, however, you probably want to connect to tailsrv
-directly from your log-consuming application. This is very easy:
+directly from your log-consuming application.
 
 ```rust
 let sock = TcpStream::connect("webserver:4321")?;
@@ -79,30 +55,41 @@ for line in BufReader::new(sock).lines() {
 }
 ```
 
-The example above is written in rust, but as you can see very straightforward.
-You can to do this from any programming language without the need for a
-special client library.
+The example above is written in rust, but as you can see it's very
+straightforward: you can to do this from any programming language without
+the need for a special client library.
 
 
-## Performance
+## Protocol
 
-* We use inotify to track modifications to the file.  This means that if the
-  file is not growing (and no new clients are connecting) tailsrv does no work.
-* We spawn one thread per client.  This means that a slow client can recieve
-  data at its own pace, without affecting other clients.
-* All data is sent using sendfile.  This means that data is sent by the kernel
-  directly from the pagecache to the network card.  No data is ever copied
-  into userspace.  This gives tailsrv really good throughput.
+### 1. The client sends a header to tailsrv
 
-TODO: Benchmarks
+The header is just an integer, in ASCII, terminated with a newline.  If the
+integer is positive, it represents the initial byte offset.  If the integer
+is negative, it is interpreted as meaning "counting back from the end of
+the file".  Examples:
 
+* `0\n` - start from the beginning of the file
+* `1000\n` - start from byte 1000
+* `-1000\n` - send the last 1000 bytes
 
-## Limitations
+### 2. tailsrv sends data to the client
 
-* tailsrv is Linux-only, due to its use of sendfile.  I plan to add some
-  fallback code and make it cross platform, however.
-* It's not a hard requirement, but your clients probably expect the watched
-  file to be append-only and tailsrv won't do anything to enforce that.
+Once it receives a header, tailsrv will start sending you file data.
+
+...and that's it as far as the protocol goes.
+tailsrv will ignore everything you send to it after the newline.
+When you're done, just close the connection.
+tailsrv will not terminate the connection unless it is shutting down.
+
+There's no in-band session control: if you want to seek to a different
+position in the file, close the connection and open a new one.
+
+### The file
+
+tailsrv expects a file which will be appended to.  If the watched file is
+deleted or moved, tailsrv will exit.  If you modify the middle of the file -
+well, nothing disasterous will happen, but your clients might get confused.
 
 
 ## Non-features
@@ -112,9 +99,6 @@ also makes operations very simple for users who don't have complicated
 requirements.  It therefore lacks some features you might expect, if you're
 coming from eg. Kafka.
 
-* **In-band session control**:  A client can't communicate with tailsrv one it
-  has begun sending data.  Therefore, if you need to seek to a different point
-  in the log, you must hang up and start a new connection.
 * **Multiple files**: Clients can't request data from specific files: it's
   strictly one-file-per-server.  If you want to stream multiple files,
   run multiple instances.
