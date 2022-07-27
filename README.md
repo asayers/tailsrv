@@ -86,36 +86,23 @@ special client library.
 
 ## Performance
 
-We use inotify to track modifications to files.  This allows us to avoid the
-latency associated with polling.  It also means that watches of quiescent files
-don't have any performance cost.
-
-We use epoll to track whether clients are writable.  This means that a slow
-client can recieve data at its own pace, but it won't block other clients (even
-though tailsrv uses only a single thread for sending data).
-
-The use of sendfile means that *all data* is sent by the kernel directly from
-the pagecache to the network card.  No data is ever copied into userspace.
-This gives tailsrv really good throughput.
-
-Clients can read data as fast or as slow as they please, without affecting each
-other.  Some fairness properties are guaranteed (TODO: document these).
+* We use inotify to track modifications to the file.  This means that if the
+  file is not growing (and no new clients are connecting) tailsrv does no work.
+* We spawn one thread per client.  This means that a slow client can recieve
+  data at its own pace, without affecting other clients.
+* All data is sent using sendfile.  This means that data is sent by the kernel
+  directly from the pagecache to the network card.  No data is ever copied
+  into userspace.  This gives tailsrv really good throughput.
 
 TODO: Benchmarks
 
 
 ## Limitations
 
-tailsrv is Linux-only, due to its use of sendfile.  I plan to add some
-fallback code and make it cross platform, however.
-
-tailsrv uses an inotify watch for each file.  This puts an upper limit on
-the number of watched files: see `/proc/sys/fs/inotify/max_user_watches`
-(the default is 64k).  If two clients watch the same file, only one watch
-is used.  When all clients for a file disconnect, the watch is removed.
-
-It's not a hard requirement, but your clients probably expect the watched
-file to be append-only and tailsrv won't do anything to enforce that.
+* tailsrv is Linux-only, due to its use of sendfile.  I plan to add some
+  fallback code and make it cross platform, however.
+* It's not a hard requirement, but your clients probably expect the watched
+  file to be append-only and tailsrv won't do anything to enforce that.
 
 
 ## Non-features
@@ -132,7 +119,7 @@ coming from eg. Kafka.
   strictly one-file-per-server.  If you want to stream multiple files,
   run multiple instances.
 * **Fault tolerance**:  If you need writen data to remain available when your
-  log server dies, just replicate it to another machine which is also running
+  fileserver dies, just replicate it to another machine which is also running
   tailsrv.  (If you have two machines physically next to each other, how about
   using DRBD?)  If the seriver dies, so too will clients' connections.  So long
   as they're keeping track of their position in the log, they can connect to
