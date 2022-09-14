@@ -18,3 +18,7 @@ tracing-subscriber = "0.3.6"
 [dependencies.tracing-journald]
 version = "0.3"
 optional = true
+
+[dependencies.sd-notify]
+version = "0.4"
+optional = true

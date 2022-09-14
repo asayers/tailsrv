@@ -88,6 +88,8 @@ fn main() -> Result<()> {
         let file_fd = file.as_raw_fd();
         std::thread::spawn(move || listen_for_clients(listener, threads2, file_fd));
         info!("Handling client connections");
+        #[cfg(feature = "sd-notify")]
+        sd_notify::notify(true, &[sd_notify::NotifyState::Ready])?;
     }
 
     // Monitor the file and wake up clients when it changes

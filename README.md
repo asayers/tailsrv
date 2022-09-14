@@ -99,9 +99,19 @@ well, nothing disasterous will happen, but your clients might get confused.
 
 ### tracing-journald
 
-Enables a new command-line flag `--journald` which will redirect all the tracing
-output to the system `journald` instead which gives much richer information than
-the default output formatter.
+Enables a dependency on
+[tracing-journald](https://crates.io/crates/tracing-journald) crate and adds a
+new `--journald` command-line flag. This will redirect all the tracing output to
+the system `journald` which gives much richer information than the default
+output formatter. Especially useful if you're planning to run `tailsrv` as a
+systemd service.
+
+### sd-notify
+
+Enables a dependency on [sd-notify](https://crates.io/crates/sd-notify) crate.
+`tailsrv` is going to send a systemd readiness notification once it starts
+accepting connections from clients. This is useful combined with a `notify`
+systemd service type.
 
 ## Licence
 
