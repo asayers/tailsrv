@@ -1,5 +1,6 @@
 use clap::Parser;
 use inotify::{EventMask, Inotify, WatchMask};
+use once_cell::sync::OnceCell;
 use std::fs::File;
 use std::io::BufRead;
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -21,15 +22,29 @@ struct Opts {
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
-pub static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
+static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
+static FILE_FD: OnceCell<RawFd> = OnceCell::new();
 
 fn main() -> Result<()> {
     let opts = Opts::parse();
     tracing_subscriber::fmt::init();
 
-    let file;
-    let mut inotify;
     let threads: Arc<Mutex<Vec<Thread>>> = Arc::new(Mutex::new(vec![]));
+
+    // Bind the socket and start listening for client connections
+    {
+        let listen_addr = SocketAddr::new([0, 0, 0, 0].into(), opts.port);
+        let _g = info_span!("listener", addr = %listen_addr).entered();
+        let listener = TcpListener::bind(&listen_addr)?;
+        info!("Bound socket");
+
+        let threads2 = threads.clone();
+        std::thread::spawn(move || listen_for_clients(listener, threads2));
+        info!("Handling client connections");
+    }
+
+    let mut inotify;
+    let file;
 
     // Open the file and set up the inotify watch
     {
@@ -52,7 +67,15 @@ fn main() -> Result<()> {
 
         let file_len = file.metadata()?.len();
         FILE_LENGTH.store(file_len, Ordering::SeqCst);
+        FILE_FD
+            .set(file.as_raw_fd())
+            .map_err(|_| "Set FILE_FD twice")?;
         info!("Opened file (initial length: {}kB)", file_len / 1024);
+
+        // Wake up any clients who were waiting for the file to exist
+        for t in threads.lock().unwrap().iter() {
+            t.unpark();
+        }
 
         inotify = Inotify::init()?;
         inotify.add_watch(
@@ -60,19 +83,6 @@ fn main() -> Result<()> {
             WatchMask::MODIFY | WatchMask::DELETE_SELF | WatchMask::MOVE_SELF,
         )?;
         info!("Created an inotify watch");
-    }
-
-    // Bind the socket and start listening for client connections
-    {
-        let listen_addr = SocketAddr::new([0, 0, 0, 0].into(), opts.port);
-        let _g = info_span!("listener", addr = %listen_addr).entered();
-        let listener = TcpListener::bind(&listen_addr)?;
-        info!("Bound socket");
-
-        let threads2 = threads.clone();
-        let file_fd = file.as_raw_fd();
-        std::thread::spawn(move || listen_for_clients(listener, threads2, file_fd));
-        info!("Handling client connections");
     }
 
     // Monitor the file and wake up clients when it changes
@@ -100,7 +110,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>, file_fd: i32) {
+fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>) {
     for conn in listener.incoming() {
         let conn = match conn {
             Ok(x) => x,
@@ -115,7 +125,7 @@ fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>, f
                 Ok(addr) => info_span!("client", %addr).entered(),
                 Err(e) => info_span!("client", no_addr = %e).entered(),
             };
-            match handle_client(conn, file_fd) {
+            match handle_client(conn) {
                 Ok(()) => (),
                 Err(e) => error!("{e}"),
             }
@@ -150,7 +160,7 @@ fn read_header(conn: &mut TcpStream) -> Result<i64> {
     }
 }
 
-fn handle_client(mut conn: TcpStream, fd: RawFd) -> Result<()> {
+fn handle_client(mut conn: TcpStream) -> Result<()> {
     info!("Connected");
     // The first thing the client will do is send a header
     let mut offset = read_header(&mut conn)?;
@@ -165,6 +175,16 @@ fn handle_client(mut conn: TcpStream, fd: RawFd) -> Result<()> {
             debug!("Waiting for changes");
             std::thread::park();
         } else {
+            let fd = match FILE_FD.get() {
+                Some(x) => *x,
+                None => {
+                    error!(
+                        "FILE_LENGTH is {file_len}, but FILE_FD isn't set yet.\
+                        This is a bug."
+                    );
+                    continue;
+                }
+            };
             debug!("Sending {wanted} bytes from offset {offset}");
             if let Err(e) =
                 nix::sys::sendfile::sendfile(conn.as_raw_fd(), fd, Some(&mut offset), wanted)
