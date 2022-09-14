@@ -95,6 +95,14 @@ tailsrv expects a file which will be appended to.  If the watched file is
 deleted or moved, tailsrv will exit.  If you modify the middle of the file -
 well, nothing disasterous will happen, but your clients might get confused.
 
+## Features
+
+### tracing-journald
+
+Enables a new command-line flag `--journald` which will redirect all the tracing
+output to the system `journald` instead which gives much richer information than
+the default output formatter.
+
 ## Licence
 
 This software is in the public domain.  See UNLICENSE for details.

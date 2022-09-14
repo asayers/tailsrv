@@ -17,6 +17,10 @@ struct Opts {
     /// The port number on which to listen for new connections
     #[clap(long, short)]
     port: u16,
+    #[cfg(feature = "tracing-journald")]
+    /// Send traces to journald instead of the terminal.
+    #[clap(long)]
+    journald: bool,
 }
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -25,6 +29,17 @@ pub static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
 
 fn main() -> Result<()> {
     let opts = Opts::parse();
+
+    #[cfg(feature = "tracing-journald")]
+    if opts.journald {
+        use tracing_subscriber::prelude::*;
+        tracing_subscriber::registry()
+            .with(tracing_journald::layer()?)
+            .init()
+    } else {
+        tracing_subscriber::fmt::init();
+    }
+    #[cfg(not(feature = "tracing-journald"))]
     tracing_subscriber::fmt::init();
 
     let file;
