@@ -4,7 +4,7 @@ use once_cell::sync::OnceCell;
 use std::fs::File;
 use std::io::BufRead;
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::os::unix::{io::AsRawFd, prelude::RawFd};
+use std::os::unix::{fs::MetadataExt, io::AsRawFd, prelude::RawFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -58,7 +58,7 @@ fn main() -> Result<()> {
     let mut inotify = Inotify::init()?;
     inotify.add_watch(
         &opts.path,
-        WatchMask::MODIFY | WatchMask::DELETE_SELF | WatchMask::MOVE_SELF,
+        WatchMask::MODIFY | WatchMask::MOVE_SELF | WatchMask::ATTRIB,
     )?;
     info!("Created an inotify watch");
 
@@ -67,12 +67,18 @@ fn main() -> Result<()> {
         let mut buf = [0; 1024];
         let events = inotify.read_events_blocking(&mut buf).unwrap();
         for ev in events {
-            if ev
-                .mask
-                .intersects(EventMask::IGNORED | EventMask::DELETE_SELF | EventMask::MOVE_SELF)
-            {
-                info!("Watched file disappeared");
+            if ev.mask.intersects(EventMask::MOVE_SELF) {
+                info!("File was moved");
                 std::process::exit(0);
+            } else if ev.mask.intersects(EventMask::ATTRIB) {
+                // The DELETE_SELF event only occurs when the file is unlinked and all FDs are
+                // closed.  Since tailsrv itself keeps an FD open, this means we never recieve
+                // DELETE_SELF events.  Instead we have to rely on the ATTRIB event which occurs
+                // when the user unlinks the file (and at other times too).
+                if file.metadata()?.nlink() == 0 {
+                    info!("File was deleted");
+                    std::process::exit(0);
+                }
             } else if ev.mask.contains(EventMask::MODIFY) {
                 let file_len = file.metadata().unwrap().len();
                 debug!("New file size: {}", file_len);
