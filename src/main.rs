@@ -109,7 +109,7 @@ fn main() -> Result<()> {
                 }
             } else if ev.mask.contains(EventMask::MODIFY) {
                 let file_len = file.metadata().unwrap().len();
-                debug!("New file size: {}", file_len);
+                trace!("New file size: {}", file_len);
                 FILE_LENGTH.store(file_len, Ordering::SeqCst);
                 wake_all_clients();
             } else {
@@ -222,7 +222,7 @@ fn handle_client(mut conn: TcpStream) -> Result<()> {
         if wanted == 0 {
             // We're all caught-up.  Wait for new data to be written
             // to the file before continuing.
-            debug!("Waiting for changes");
+            trace!("Waiting for changes");
             std::thread::park();
         } else {
             let fd = match FILE_FD.get() {
@@ -235,7 +235,7 @@ fn handle_client(mut conn: TcpStream) -> Result<()> {
                     continue;
                 }
             };
-            debug!("Sending {wanted} bytes from offset {offset}");
+            trace!("Sending {wanted} bytes from offset {offset}");
             if let Err(e) =
                 nix::sys::sendfile::sendfile(conn.as_raw_fd(), fd, Some(&mut offset), wanted)
             {
