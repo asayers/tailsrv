@@ -18,6 +18,11 @@ struct Opts {
     /// The port number on which to listen for new connections
     #[clap(long, short)]
     port: u16,
+    /// By default tailsrv will quit when the underlying file is moved/deleted,
+    /// causing any attached clients to be disconnected.  This option causes
+    /// it to continue to run.
+    #[clap(long)]
+    linger_after_file_is_gone: bool,
 }
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -69,7 +74,9 @@ fn main() -> Result<()> {
         for ev in events {
             if ev.mask.intersects(EventMask::MOVE_SELF) {
                 info!("File was moved");
-                std::process::exit(0);
+                if !opts.linger_after_file_is_gone {
+                    std::process::exit(0);
+                }
             } else if ev.mask.intersects(EventMask::ATTRIB) {
                 // The DELETE_SELF event only occurs when the file is unlinked and all FDs are
                 // closed.  Since tailsrv itself keeps an FD open, this means we never recieve
@@ -77,7 +84,9 @@ fn main() -> Result<()> {
                 // when the user unlinks the file (and at other times too).
                 if file.metadata()?.nlink() == 0 {
                     info!("File was deleted");
-                    std::process::exit(0);
+                    if !opts.linger_after_file_is_gone {
+                        std::process::exit(0);
+                    }
                 }
             } else if ev.mask.contains(EventMask::MODIFY) {
                 let file_len = file.metadata().unwrap().len();
