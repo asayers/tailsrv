@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::BufRead;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::{io::AsRawFd, prelude::RawFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::Thread;
@@ -29,61 +29,38 @@ fn main() -> Result<()> {
     let opts = Opts::parse();
     tracing_subscriber::fmt::init();
 
-    let threads: Arc<Mutex<Vec<Thread>>> = Arc::new(Mutex::new(vec![]));
-
-    // Bind the socket and start listening for client connections
-    {
-        let listen_addr = SocketAddr::new([0, 0, 0, 0].into(), opts.port);
-        let _g = info_span!("listener", addr = %listen_addr).entered();
-        let listener = TcpListener::bind(&listen_addr)?;
-        info!("Bound socket");
-
-        let threads2 = threads.clone();
-        std::thread::spawn(move || listen_for_clients(listener, threads2));
-        info!("Handling client connections");
-    }
-
-    let mut inotify;
-    let file;
-
-    // Open the file and set up the inotify watch
-    {
-        let _g = info_span!("file", path = %opts.path.display()).entered();
-        file = loop {
-            match File::open(&opts.path) {
-                Ok(f) => break f,
-                Err(e) => match e.kind() {
-                    std::io::ErrorKind::NotFound => {
-                        info!("Waiting for file to be created");
-                        std::thread::sleep(std::time::Duration::from_secs(3))
-                    }
-                    _ => return Err(e.into()),
-                },
-            }
-        };
-        if !file.metadata()?.is_file() {
-            return Err(format!("{}: Not a file", opts.path.display()).into());
-        }
-
-        let file_len = file.metadata()?.len();
-        FILE_LENGTH.store(file_len, Ordering::SeqCst);
-        FILE_FD
-            .set(file.as_raw_fd())
-            .map_err(|_| "Set FILE_FD twice")?;
-        info!("Opened file (initial length: {}kB)", file_len / 1024);
-
-        // Wake up any clients who were waiting for the file to exist
+    // Bind the listener first, so clients can start connecting immediately.
+    // It's fine for them to connect even before the file exists; of course,
+    // they won't recieve any data until it _does_ exist.
+    let threads = bind_listener(opts.port)?;
+    let wake_all_clients = || {
         for t in threads.lock().unwrap().iter() {
             t.unpark();
         }
+    };
 
-        inotify = Inotify::init()?;
-        inotify.add_watch(
-            &opts.path,
-            WatchMask::MODIFY | WatchMask::DELETE_SELF | WatchMask::MOVE_SELF,
-        )?;
-        info!("Created an inotify watch");
-    }
+    // Now we wait until the file exists
+    let file = wait_for_file(&opts.path)?;
+
+    // Initialise tailsrv's state
+    FILE_FD
+        .set(file.as_raw_fd())
+        .map_err(|_| "Set FILE_FD twice")?;
+
+    let file_len = file.metadata()?.len();
+    FILE_LENGTH.store(file_len, Ordering::SeqCst);
+    info!("Initial file size: {}kB", file_len / 1024);
+
+    // Wake up any clients who were waiting for the file to exist
+    wake_all_clients();
+
+    // Set up the inotify watch
+    let mut inotify = Inotify::init()?;
+    inotify.add_watch(
+        &opts.path,
+        WatchMask::MODIFY | WatchMask::DELETE_SELF | WatchMask::MOVE_SELF,
+    )?;
+    info!("Created an inotify watch");
 
     // Monitor the file and wake up clients when it changes
     loop {
@@ -98,16 +75,55 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             } else if ev.mask.contains(EventMask::MODIFY) {
                 let file_len = file.metadata().unwrap().len();
-                debug!("File length is now {}", file_len);
+                debug!("New file size: {}", file_len);
                 FILE_LENGTH.store(file_len, Ordering::SeqCst);
-                for t in threads.lock().unwrap().iter() {
-                    t.unpark();
-                }
+                wake_all_clients();
             } else {
                 warn!("Unknown inotify event: {ev:?}");
             }
         }
     }
+}
+
+/// Bind the socket and start listening for client connections
+fn bind_listener(port: u16) -> Result<Arc<Mutex<Vec<Thread>>>> {
+    let listen_addr = SocketAddr::new([0, 0, 0, 0].into(), port);
+    let _g = info_span!("listener", addr = %listen_addr).entered();
+
+    let threads: Arc<Mutex<Vec<Thread>>> = Arc::new(Mutex::new(vec![]));
+
+    let listener = TcpListener::bind(&listen_addr)?;
+    info!("Bound socket");
+
+    let threads2 = threads.clone();
+    std::thread::spawn(move || listen_for_clients(listener, threads2));
+    info!("Handling client connections");
+
+    Ok(threads)
+}
+
+/// Wait until the file exists and open it.  If it already exists then this
+/// returns immediately.  If not, we just poll every few seconds.  I don't
+/// think it's important to be extremely promt here.
+fn wait_for_file(path: &Path) -> Result<File> {
+    let _g = info_span!("file", path = %path.display()).entered();
+    let file = loop {
+        match File::open(path) {
+            Ok(f) => break f,
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    info!("Waiting for file to be created");
+                    std::thread::sleep(std::time::Duration::from_secs(3))
+                }
+                _ => return Err(e.into()),
+            },
+        }
+    };
+    if !file.metadata()?.is_file() {
+        return Err(format!("{}: Not a file", path.display()).into());
+    }
+    info!("Opened file");
+    Ok(file)
 }
 
 fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>) {
