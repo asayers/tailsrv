@@ -23,6 +23,10 @@ struct Opts {
     /// it to continue to run.
     #[clap(long)]
     linger_after_file_is_gone: bool,
+    /// Send traces to journald instead of the terminal.
+    #[cfg(feature = "tracing-journald")]
+    #[clap(long)]
+    journald: bool,
 }
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -32,6 +36,17 @@ static FILE_FD: OnceCell<RawFd> = OnceCell::new();
 
 fn main() -> Result<()> {
     let opts = Opts::parse();
+
+    #[cfg(feature = "tracing-journald")]
+    if opts.journald {
+        use tracing_subscriber::prelude::*;
+        tracing_subscriber::registry()
+            .with(tracing_journald::layer()?)
+            .init()
+    } else {
+        tracing_subscriber::fmt::init();
+    }
+    #[cfg(not(feature = "tracing-journald"))]
     tracing_subscriber::fmt::init();
 
     // Bind the listener first, so clients can start connecting immediately.
@@ -43,6 +58,10 @@ fn main() -> Result<()> {
             t.unpark();
         }
     };
+
+    // We're ready to accept clients now; let systemd know it can start them
+    #[cfg(feature = "sd-notify")]
+    sd_notify::notify(true, &[sd_notify::NotifyState::Ready])?;
 
     // Now we wait until the file exists
     let file = wait_for_file(&opts.path)?;

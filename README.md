@@ -95,6 +95,24 @@ tailsrv expects a file which will be appended to.  If the watched file is
 deleted or moved, tailsrv will exit.  If you modify the middle of the file -
 well, nothing disasterous will happen, but your clients might get confused.
 
+## Features
+
+### tracing-journald
+
+Enables a dependency on
+[tracing-journald](https://crates.io/crates/tracing-journald) crate and adds a
+new `--journald` command-line flag. This will redirect all the tracing output to
+the system `journald` which gives much richer information than the default
+output formatter. Especially useful if you're planning to run `tailsrv` as a
+systemd service.
+
+### sd-notify
+
+Enables a dependency on [sd-notify](https://crates.io/crates/sd-notify) crate.
+`tailsrv` is going to send a systemd readiness notification once it starts
+accepting connections from clients. This is useful combined with a `notify`
+systemd service type.
+
 ## Licence
 
 This software is in the public domain.  See UNLICENSE for details.
