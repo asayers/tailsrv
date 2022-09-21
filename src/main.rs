@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::Thread;
 use tracing::*;
+use tracing_subscriber::{prelude::*, EnvFilter};
 
 #[derive(Parser)]
 struct Opts {
@@ -37,17 +38,20 @@ static FILE_FD: OnceCell<RawFd> = OnceCell::new();
 fn main() -> Result<()> {
     let opts = Opts::parse();
 
+    let subscriber = tracing_subscriber::registry().with(
+        EnvFilter::builder()
+            .with_default_directive(Level::INFO.into())
+            .from_env_lossy(),
+    );
+
     #[cfg(feature = "tracing-journald")]
     if opts.journald {
-        use tracing_subscriber::prelude::*;
-        tracing_subscriber::registry()
-            .with(tracing_journald::layer()?)
-            .init()
+        subscriber.with(tracing_journald::layer()?).init()
     } else {
-        tracing_subscriber::fmt::init();
+        subscriber.with(tracing_subscriber::fmt::layer()).init();
     }
     #[cfg(not(feature = "tracing-journald"))]
-    tracing_subscriber::fmt::init();
+    subscriber.with(tracing_subscriber::fmt::layer()).init();
 
     // Bind the listener first, so clients can start connecting immediately.
     // It's fine for them to connect even before the file exists; of course,
