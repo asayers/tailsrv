@@ -219,6 +219,12 @@ fn handle_client(mut conn: TcpStream) -> Result<()> {
     // The first thing the client will do is send a header
     let mut offset = read_header(&mut conn)?;
     info!("Starting from offset {}", offset);
+    // Spawn a thread to read (and discard) anything send by the client.
+    // This is so that clients can use writability as way to test whether
+    // their connection is alive.
+    let mut conn2 = conn.try_clone()?;
+    std::thread::spawn(move || std::io::copy(&mut conn2, &mut std::io::sink()));
+    // Send file data to the client; sleep until the file grows; repeat.
     loop {
         // How many bytes the client wants
         let file_len = FILE_LENGTH.load(Ordering::SeqCst) as usize;
