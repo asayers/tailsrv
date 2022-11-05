@@ -6,6 +6,7 @@ use std::io::BufRead;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::{fs::MetadataExt, io::AsRawFd, prelude::RawFd};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::Thread;
@@ -28,6 +29,29 @@ struct Opts {
     #[cfg(feature = "tracing-journald")]
     #[clap(long)]
     journald: bool,
+    /// How to intepret the header.  Can be one of "bytes", "lines", or
+    /// "nulls".
+    #[clap(long, default_value = "bytes")]
+    mode: Mode,
+}
+
+#[derive(Debug, Copy, Clone)]
+enum Mode {
+    Bytes,
+    Lines,
+    Nulls,
+}
+
+impl FromStr for Mode {
+    type Err = String;
+    fn from_str(x: &str) -> Result<Mode, String> {
+        match x {
+            "bytes" => Ok(Mode::Bytes),
+            "lines" => Ok(Mode::Lines),
+            "nulls" => Ok(Mode::Nulls),
+            _ => Err(format!("{x}: Unknown mode")),
+        }
+    }
 }
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -56,7 +80,7 @@ fn main() -> Result<()> {
     // Bind the listener first, so clients can start connecting immediately.
     // It's fine for them to connect even before the file exists; of course,
     // they won't recieve any data until it _does_ exist.
-    let threads = bind_listener(opts.port)?;
+    let threads = bind_listener(opts.port, opts.mode)?;
     let wake_all_clients = || {
         for t in threads.lock().unwrap().iter() {
             t.unpark();
@@ -124,7 +148,7 @@ fn main() -> Result<()> {
 }
 
 /// Bind the socket and start listening for client connections
-fn bind_listener(port: u16) -> Result<Arc<Mutex<Vec<Thread>>>> {
+fn bind_listener(port: u16, mode: Mode) -> Result<Arc<Mutex<Vec<Thread>>>> {
     let listen_addr = SocketAddr::new([0, 0, 0, 0].into(), port);
     let _g = info_span!("listener", addr = %listen_addr).entered();
 
@@ -134,7 +158,7 @@ fn bind_listener(port: u16) -> Result<Arc<Mutex<Vec<Thread>>>> {
     info!("Bound socket");
 
     let threads2 = threads.clone();
-    std::thread::spawn(move || listen_for_clients(listener, threads2));
+    std::thread::spawn(move || listen_for_clients(listener, threads2, mode));
     info!("Handling client connections");
 
     Ok(threads)
@@ -164,7 +188,7 @@ fn wait_for_file(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>) {
+fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>, mode: Mode) {
     for conn in listener.incoming() {
         let conn = match conn {
             Ok(x) => x,
@@ -179,7 +203,7 @@ fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>) {
                 Ok(addr) => info_span!("client", %addr).entered(),
                 Err(e) => info_span!("client", no_addr = %e).entered(),
             };
-            match handle_client(conn) {
+            match handle_client(conn, mode) {
                 Ok(()) => (),
                 Err(e) => error!("{e}"),
             }
@@ -195,7 +219,7 @@ fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>) {
     std::process::exit(1);
 }
 
-fn read_header(conn: &mut TcpStream) -> Result<i64> {
+fn read_header(conn: &mut TcpStream, mode: Mode) -> Result<i64> {
     // Read the header
     let mut buf = String::new();
     std::io::BufReader::new(conn).read_line(&mut buf)?;
@@ -206,6 +230,14 @@ fn read_header(conn: &mut TcpStream) -> Result<i64> {
     let header: i64 = buf.as_str().trim().parse()?;
 
     // Resolve the header to a byte offset
+    match mode {
+        Mode::Bytes => byte_to_offset(header),
+        Mode::Lines => line_to_offset(header),
+        Mode::Nulls => null_to_offset(header),
+    }
+}
+
+fn byte_to_offset(header: i64) -> Result<i64> {
     if header >= 0 {
         Ok(header)
     } else {
@@ -213,11 +245,17 @@ fn read_header(conn: &mut TcpStream) -> Result<i64> {
         Ok(i64::try_from(cur_len)? + header)
     }
 }
+fn line_to_offset(header: i64) -> Result<i64> {
+    Err("Not implemented yet".into())
+}
+fn null_to_offset(header: i64) -> Result<i64> {
+    Err("Not implemented yet".into())
+}
 
-fn handle_client(mut conn: TcpStream) -> Result<()> {
+fn handle_client(mut conn: TcpStream, mode: Mode) -> Result<()> {
     info!("Connected");
     // The first thing the client will do is send a header
-    let mut offset = read_header(&mut conn)?;
+    let mut offset = read_header(&mut conn, mode)?;
     info!("Starting from offset {}", offset);
     // Spawn a thread to read (and discard) anything send by the client.
     // This is so that clients can use writability as way to test whether
