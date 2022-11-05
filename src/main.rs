@@ -246,10 +246,43 @@ fn byte_to_offset(header: i64) -> Result<i64> {
     }
 }
 fn line_to_offset(header: i64) -> Result<i64> {
-    Err("Not implemented yet".into())
+    match header {
+        2.. => {
+            let fd = FILE_FD.get().ok_or("The file hasn't been opened yet")?;
+            // The first newline (which gives the location of line #2)
+            // would have a "newline idx" of 0
+            let newline_idx = usize::try_from(header)? - 2;
+            let newline_pos = unsafe {
+                let mmap = memmap2::Mmap::map(fd)?;
+                memchr::memchr_iter(b'\n', &mmap)
+                    .nth(newline_idx)
+                    .ok_or("Not enough lines in the file")?
+            };
+            Ok(i64::try_from(newline_pos)? + 1)
+        }
+        1 => Ok(0),
+        0 => Err("Lines are 1-indexed".into()),
+        _ => Err("Reverse-indexing not yet supported in lines mode".into()),
+    }
 }
 fn null_to_offset(header: i64) -> Result<i64> {
-    Err("Not implemented yet".into())
+    match header {
+        1.. => {
+            let fd = FILE_FD.get().ok_or("The file hasn't been opened yet")?;
+            // The first null (which gives the location of entry #1) would
+            // have a "null idx" of 0
+            let null_idx = usize::try_from(header)? - 1;
+            let null_pos = unsafe {
+                let mmap = memmap2::Mmap::map(fd)?;
+                memchr::memchr_iter(0, &mmap)
+                    .nth(null_idx)
+                    .ok_or("Not enough nulls in the file")?
+            };
+            Ok(i64::try_from(null_pos)? + 1)
+        }
+        0 => Ok(0),
+        _ => Err("Reverse-indexing not yet supported in nulls mode".into()),
+    }
 }
 
 fn handle_client(mut conn: TcpStream, mode: Mode) -> Result<()> {
