@@ -6,7 +6,7 @@ It's like `tail -f`, but as a server.
 * When a client connects, tailsrv sends it data from the file.
 * If there is no new data to send, tailsrv waits until the file grows.
 * If the socket is full, tailsrv waits for the client to consume some data before sending more.
-* Clients can specify an initial byte-offset when they connect.
+* Clients can specify an initial position when they connect.
 
 Some implementation details:
 
@@ -68,14 +68,37 @@ the need for a special client library.
 
 ### Step 1: the client sends a header to tailsrv
 
-The header is just an integer, in ASCII, terminated with a newline.  If the
-integer is positive, it represents the initial byte offset.  If the integer
-is negative, it is interpreted as meaning "counting back from the end of
-the file".  Examples:
+The header is just an integer, in ASCII, terminated with a newline.
+This integer determines the client's initial offset in the file.  The way
+it's interpreted depends on the mode in which tailsrv was started.
+
+#### Byte-mode
+
+If the integer is positive, it represents the initial byte offset.  If the
+integer is negative, it is interpreted as meaning "counting back from the
+end of the file".  Examples:
 
 * `0\n` - start from the beginning of the file
 * `1000\n` - start from byte 1000
 * `-1000\n` - send the last 1000 bytes
+
+#### Line-mode
+
+The file is is interpreted as containing lines terminated with a newline
+character.  The integer represents a line number.  Line are 1-indexed.
+The integer must be positive and non-zero.
+
+* `1\n` - start from the beginning of the file
+* `1000\n` - start from line 1000
+
+#### Null-mode
+
+The file is is interpreted as containing entries terminated with a null byte.
+The integer represents a the index of an entry.  Entries are 0-indexed.
+The integer must be positive.
+
+* `0\n` - start from the beginning of the file
+* `1000\n` - start from entry 1000
 
 ### Step 2: tailsrv sends data to the client
 
