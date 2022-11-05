@@ -1,3 +1,5 @@
+mod cache;
+
 use clap::Parser;
 use inotify::{EventMask, Inotify, WatchMask};
 use once_cell::sync::OnceCell;
