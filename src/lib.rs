@@ -12,10 +12,11 @@ pub fn log_init(#[cfg(feature = "tracing-journald")] journald: bool) {
 
     #[cfg(feature = "tracing-journald")]
     if opts.journald {
-        subscriber.with(tracing_journald::layer()?).init()
-    } else {
-        subscriber.with(tracing_subscriber::fmt::layer()).init();
+        let subscriber = subscriber.with(tracing_journald::layer()?);
+        return subscriber.init();
     }
-    #[cfg(not(feature = "tracing-journald"))]
-    subscriber.with(tracing_subscriber::fmt::layer()).init();
+
+    let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    let subscriber = subscriber.with(layer);
+    subscriber.init();
 }
