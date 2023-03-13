@@ -12,13 +12,20 @@ struct Opts {
     /// The file to save the stream to
     #[clap(short, long)]
     out: Option<PathBuf>,
+    /// Send traces to journald instead of the terminal.
+    #[cfg(feature = "tracing-journald")]
+    #[clap(long)]
+    journald: bool,
 }
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 fn main() -> Result<()> {
     let opts = Opts::parse();
-    tracing_subscriber::fmt::init();
+    tailsrv::log_init(
+        #[cfg(feature = "tracing-journald")]
+        opts.journald,
+    );
 
     if let Some(path) = &opts.out {
         // Open the file in append mode, creating it if it doesn't already
