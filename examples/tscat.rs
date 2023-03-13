@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
+use std::time::Duration;
 use tracing::*;
 
 #[derive(Parser)]
@@ -17,6 +18,9 @@ struct Opts {
     #[cfg(feature = "tracing-journald")]
     #[clap(long)]
     journald: bool,
+    /// How often to ping the server to check for a dead connection
+    #[clap(long, default_value = "5")]
+    heartbeat_secs: u64,
 }
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -40,19 +44,40 @@ fn main() -> Result<()> {
         // We assume that this point that we're the only process writing to
         // the file, so we can read its length and not worry about TOCTOU.
         let len = file.seek(SeekFrom::End(0))?;
-        mirror(opts.addr, len, file)
+        mirror(opts.addr, len, file, opts.heartbeat_secs)
     } else {
         let stdout = std::io::stdout().lock();
-        mirror(opts.addr, 0, stdout)
+        mirror(opts.addr, 0, stdout, opts.heartbeat_secs)
     }
 }
 
-fn mirror(addr: SocketAddr, start_from: u64, mut out: impl Write) -> Result<()> {
+fn mirror(
+    addr: SocketAddr,
+    start_from: u64,
+    mut out: impl Write,
+    heartbeat_secs: u64,
+) -> Result<()> {
     let mut conn = TcpStream::connect(addr)?;
     if start_from != 0 {
         info!("Starting from byte {start_from}");
     }
     writeln!(conn, "{start_from}")?;
+
+    {
+        let mut conn = conn.try_clone()?;
+        std::thread::spawn(move || loop {
+            // Send a newline charater back to tailsrv.  Tailsrv discards
+            // anything sent to it by a client, so this newline will be thrown
+            // away.  The purpose of this is to detect a dead TCP connection.
+            if let Err(e) = writeln!(conn) {
+                error!("{e}");
+                // panic!() kills only the current thread.  This takes down
+                // both threads.
+                std::process::exit(1);
+            }
+            std::thread::sleep(Duration::from_secs(heartbeat_secs));
+        });
+    }
 
     std::io::copy(&mut conn, &mut out)?;
     Ok(())
