@@ -1,8 +1,9 @@
 use clap::Parser;
 use std::fs::File;
-use std::io::prelude::*;
+use std::io::{prelude::*, SeekFrom};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
+use tracing::*;
 
 #[derive(Parser)]
 struct Opts {
@@ -22,17 +23,27 @@ fn main() -> Result<()> {
     if let Some(path) = &opts.out {
         // Open the file in append mode, creating it if it doesn't already
         // exist.
-        let file = File::options().append(true).create(true).open(path)?;
-        mirror(opts.addr, file)
+        let mut file = File::options().append(true).create(true).open(path)?;
+        // We assume that this point that we're the only process writing to
+        // the file, so we can read its length and not worry about TOCTOU.
+        let len = file.seek(SeekFrom::End(0))?;
+        mirror(opts.addr, len, file)
     } else {
         let stdout = std::io::stdout().lock();
-        mirror(opts.addr, stdout)
+        mirror(opts.addr, 0, stdout)
     }
 }
 
-fn mirror(addr: SocketAddr, mut out: impl Write) -> Result<()> {
+fn mirror(
+    addr: SocketAddr,
+    start_from: u64,
+    mut out: impl Write,
+) -> Result<()> {
     let mut conn = TcpStream::connect(addr)?;
-    writeln!(conn, "0")?;
+    if start_from != 0 {
+        info!("Starting from byte {start_from}");
+    }
+    writeln!(conn, "{start_from}")?;
 
     std::io::copy(&mut conn, &mut out)?;
     Ok(())
