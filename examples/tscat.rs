@@ -1,4 +1,5 @@
 use clap::Parser;
+use fd_lock::RwLock;
 use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
 use std::net::{SocketAddr, TcpStream};
@@ -30,7 +31,12 @@ fn main() -> Result<()> {
     if let Some(path) = &opts.out {
         // Open the file in append mode, creating it if it doesn't already
         // exist.
-        let mut file = File::options().append(true).create(true).open(path)?;
+        let file = File::options().append(true).create(true).open(path)?;
+        // Take an exclusive lock on the file, and exit if it's already locked.
+        // This prevents two tscats from writing to the same file.
+        let mut file = RwLock::new(file);
+        let mut file = file.try_write()?;
+        let file = &mut file as &mut File;
         // We assume that this point that we're the only process writing to
         // the file, so we can read its length and not worry about TOCTOU.
         let len = file.seek(SeekFrom::End(0))?;
@@ -41,11 +47,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn mirror(
-    addr: SocketAddr,
-    start_from: u64,
-    mut out: impl Write,
-) -> Result<()> {
+fn mirror(addr: SocketAddr, start_from: u64, mut out: impl Write) -> Result<()> {
     let mut conn = TcpStream::connect(addr)?;
     if start_from != 0 {
         info!("Starting from byte {start_from}");
