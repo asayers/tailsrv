@@ -130,7 +130,7 @@ fn bind_listener(port: u16) -> Result<Arc<Mutex<Vec<Thread>>>> {
 
     let threads: Arc<Mutex<Vec<Thread>>> = Arc::new(Mutex::new(vec![]));
 
-    let listener = TcpListener::bind(&listen_addr)?;
+    let listener = TcpListener::bind(listen_addr)?;
     info!("Bound socket");
 
     let threads2 = threads.clone();
