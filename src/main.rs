@@ -3,7 +3,7 @@ use inotify::{EventMask, Inotify, WatchMask};
 use std::fs::File;
 use std::io::BufRead;
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::os::unix::{fs::MetadataExt, io::AsRawFd, prelude::RawFd};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -204,7 +204,7 @@ fn read_header(conn: &mut TcpStream) -> Result<u64> {
 fn handle_client(mut conn: TcpStream) -> Result<()> {
     info!("Connected");
     // The first thing the client will do is send a header
-    let mut offset = read_header(&mut conn)? as i64;
+    let mut offset = read_header(&mut conn)?;
     info!("Starting from offset {}", offset);
     // Spawn a thread to read (and discard) anything send by the client.
     // This is so that clients can use writability as way to test whether
@@ -227,9 +227,7 @@ fn handle_client(mut conn: TcpStream) -> Result<()> {
                 continue;
             };
             trace!("Sending {wanted} bytes from offset {offset}");
-            if let Err(e) =
-                nix::sys::sendfile::sendfile(conn.as_raw_fd(), file.as_raw_fd(), Some(&mut offset), wanted)
-            {
+            if let Err(e) = rustix::fs::sendfile(&conn, file, Some(&mut offset), wanted) {
                 match std::io::Error::from(e).kind() {
                     std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset => {
                         // The client hung up
