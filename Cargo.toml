@@ -24,4 +24,4 @@ version = "0.4"
 optional = true
 
 [dev-dependencies]
-fd-lock = "3.0.10"
+fd-lock = "3.0.13"
