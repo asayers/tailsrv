@@ -32,7 +32,7 @@ struct Opts {
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
-static FILE_FD: OnceLock<RawFd> = OnceLock::new();
+static FILE: OnceLock<File> = OnceLock::new();
 
 fn main() -> Result<()> {
     let opts = Opts::parse();
@@ -59,9 +59,8 @@ fn main() -> Result<()> {
     let file = wait_for_file(&opts.path)?;
 
     // Initialise tailsrv's state
-    FILE_FD
-        .set(file.as_raw_fd())
-        .map_err(|_| "Set FILE_FD twice")?;
+    FILE.set(file).map_err(|_| "Set FILE twice")?;
+    let file = FILE.get().unwrap();
 
     let file_len = file.metadata()?.len();
     FILE_LENGTH.store(file_len, Ordering::SeqCst);
@@ -223,19 +222,13 @@ fn handle_client(mut conn: TcpStream) -> Result<()> {
             trace!("Waiting for changes");
             std::thread::park();
         } else {
-            let fd = match FILE_FD.get() {
-                Some(x) => *x,
-                None => {
-                    error!(
-                        "FILE_LENGTH is {file_len}, but FILE_FD isn't set yet.\
-                        This is a bug."
-                    );
-                    continue;
-                }
+            let Some(file) = FILE.get() else {
+                error!("FILE_LENGTH is {file_len}, but FILE_FD isn't set yet. This is a bug.");
+                continue;
             };
             trace!("Sending {wanted} bytes from offset {offset}");
             if let Err(e) =
-                nix::sys::sendfile::sendfile(conn.as_raw_fd(), fd, Some(&mut offset), wanted)
+                nix::sys::sendfile::sendfile(conn.as_raw_fd(), file.as_raw_fd(), Some(&mut offset), wanted)
             {
                 match std::io::Error::from(e).kind() {
                     std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset => {
