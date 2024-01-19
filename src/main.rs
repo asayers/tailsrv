@@ -71,7 +71,7 @@ fn main() -> Result<()> {
 
     // Set up the inotify watch
     let mut inotify = Inotify::init()?;
-    inotify.add_watch(
+    inotify.watches().add(
         &opts.path,
         WatchMask::MODIFY | WatchMask::MOVE_SELF | WatchMask::ATTRIB,
     )?;

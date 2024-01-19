@@ -10,7 +10,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.1.8", features = ["derive"] }
-inotify = { version = "0.10.0", default-features = false }
+inotify = { version = "0.10.2", default-features = false }
 rustix = { version = "0.38.30", features = ["fs"] }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
