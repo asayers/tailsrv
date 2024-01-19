@@ -182,7 +182,7 @@ fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>) {
     std::process::exit(1);
 }
 
-fn read_header(conn: &mut TcpStream) -> Result<i64> {
+fn read_header(conn: &mut TcpStream) -> Result<u64> {
     // Read the header
     let mut buf = String::new();
     std::io::BufReader::new(conn).read_line(&mut buf)?;
@@ -194,17 +194,17 @@ fn read_header(conn: &mut TcpStream) -> Result<i64> {
 
     // Resolve the header to a byte offset
     if header >= 0 {
-        Ok(header)
+        Ok(u64::try_from(header)?)
     } else {
         let cur_len = FILE_LENGTH.load(Ordering::SeqCst);
-        Ok(i64::try_from(cur_len)? + header)
+        Ok(cur_len.saturating_add_signed(header))
     }
 }
 
 fn handle_client(mut conn: TcpStream) -> Result<()> {
     info!("Connected");
     // The first thing the client will do is send a header
-    let mut offset = read_header(&mut conn)?;
+    let mut offset = read_header(&mut conn)? as i64;
     info!("Starting from offset {}", offset);
     // Spawn a thread to read (and discard) anything send by the client.
     // This is so that clients can use writability as way to test whether
