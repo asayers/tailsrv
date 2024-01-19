@@ -130,7 +130,7 @@ fn bind_listener(port: u16) -> Result<Arc<Mutex<Vec<Thread>>>> {
 
 /// Wait until the file exists and open it.  If it already exists then this
 /// returns immediately.  If not, we just poll every few seconds.  I don't
-/// think it's important to be extremely promt here.
+/// think it's important to be extremely prompt here.
 fn wait_for_file(path: &Path) -> Result<File> {
     let _g = info_span!("file", path = %path.display()).entered();
     let file = loop {
