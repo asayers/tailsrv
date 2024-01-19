@@ -380,7 +380,6 @@ dependencies = [
  "fd-lock",
  "inotify",
  "nix",
- "once_cell",
  "sd-notify",
  "tracing",
  "tracing-journald",

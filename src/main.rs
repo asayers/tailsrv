@@ -1,12 +1,12 @@
 use clap::Parser;
 use inotify::{EventMask, Inotify, WatchMask};
-use once_cell::sync::OnceCell;
 use std::fs::File;
 use std::io::BufRead;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::{fs::MetadataExt, io::AsRawFd, prelude::RawFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::thread::Thread;
 use tracing::*;
@@ -32,7 +32,7 @@ struct Opts {
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
-static FILE_FD: OnceCell<RawFd> = OnceCell::new();
+static FILE_FD: OnceLock<RawFd> = OnceLock::new();
 
 fn main() -> Result<()> {
     let opts = Opts::parse();
