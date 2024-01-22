@@ -166,7 +166,7 @@ fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>) {
                 Ok(addr) => info_span!("client", %addr).entered(),
                 Err(e) => info_span!("client", no_addr = %e).entered(),
             };
-            match handle_client(conn) {
+            match init_client(conn) {
                 Ok(()) => (),
                 Err(e) => error!("{e}"),
             }
@@ -180,6 +180,23 @@ fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>) {
     }
     error!("Listening socket was closed!");
     std::process::exit(1);
+}
+
+fn init_client(mut conn: TcpStream) -> Result<()> {
+    info!("Connected");
+    // The first thing the client will do is send a header
+    let offset = read_header(&mut conn)?;
+    info!("Starting from offset {offset}");
+    {
+        // Spawn a thread to read (and discard) anything send by the client.
+        // This is so that clients can use writability as way to test whether
+        // their connection is alive.
+        let mut conn = conn.try_clone()?;
+        std::thread::spawn(move || std::io::copy(&mut conn, &mut std::io::sink()));
+    }
+    let ret = handle_client(conn.try_clone()?, offset);
+    let _ = conn.shutdown(std::net::Shutdown::Both);
+    ret
 }
 
 fn read_header(conn: &mut TcpStream) -> Result<u64> {
@@ -201,16 +218,7 @@ fn read_header(conn: &mut TcpStream) -> Result<u64> {
     }
 }
 
-fn handle_client(mut conn: TcpStream) -> Result<()> {
-    info!("Connected");
-    // The first thing the client will do is send a header
-    let mut offset = read_header(&mut conn)?;
-    info!("Starting from offset {}", offset);
-    // Spawn a thread to read (and discard) anything send by the client.
-    // This is so that clients can use writability as way to test whether
-    // their connection is alive.
-    let mut conn2 = conn.try_clone()?;
-    std::thread::spawn(move || std::io::copy(&mut conn2, &mut std::io::sink()));
+fn handle_client(conn: TcpStream, mut offset: u64) -> Result<()> {
     // Send file data to the client; sleep until the file grows; repeat.
     loop {
         // How many bytes the client wants
