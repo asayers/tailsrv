@@ -6,8 +6,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex, OnceLock};
 use std::thread::Thread;
 use tracing::*;
 
@@ -33,6 +32,7 @@ type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
 static FILE: OnceLock<File> = OnceLock::new();
+static CLIENT_THREADS: Mutex<Vec<Thread>> = Mutex::new(vec![]);
 
 fn main() -> Result<()> {
     let opts = Opts::parse();
@@ -44,12 +44,7 @@ fn main() -> Result<()> {
     // Bind the listener first, so clients can start connecting immediately.
     // It's fine for them to connect even before the file exists; of course,
     // they won't recieve any data until it _does_ exist.
-    let threads = bind_listener(opts.port)?;
-    let wake_all_clients = || {
-        for t in threads.lock().unwrap().iter() {
-            t.unpark();
-        }
-    };
+    bind_listener(opts.port)?;
 
     // We're ready to accept clients now; let systemd know it can start them
     #[cfg(feature = "sd-notify")]
@@ -110,21 +105,24 @@ fn main() -> Result<()> {
     }
 }
 
+fn wake_all_clients() {
+    for t in CLIENT_THREADS.lock().unwrap().iter() {
+        t.unpark();
+    }
+}
+
 /// Bind the socket and start listening for client connections
-fn bind_listener(port: u16) -> Result<Arc<Mutex<Vec<Thread>>>> {
+fn bind_listener(port: u16) -> Result<()> {
     let listen_addr = SocketAddr::new([0, 0, 0, 0].into(), port);
     let _g = info_span!("listener", addr = %listen_addr).entered();
-
-    let threads: Arc<Mutex<Vec<Thread>>> = Arc::new(Mutex::new(vec![]));
 
     let listener = TcpListener::bind(listen_addr)?;
     info!("Bound socket");
 
-    let threads2 = threads.clone();
-    std::thread::spawn(move || listen_for_clients(listener, threads2));
+    std::thread::spawn(move || listen_for_clients(listener));
     info!("Handling client connections");
 
-    Ok(threads)
+    Ok(())
 }
 
 /// Wait until the file exists and open it.  If it already exists then this
@@ -151,7 +149,7 @@ fn wait_for_file(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>) {
+fn listen_for_clients(listener: TcpListener) {
     for conn in listener.incoming() {
         let conn = match conn {
             Ok(x) => x,
@@ -160,7 +158,6 @@ fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>) {
                 continue;
             }
         };
-        let threads2 = threads.clone();
         let join_handle = std::thread::spawn(move || {
             let _g = match conn.peer_addr() {
                 Ok(addr) => info_span!("client", %addr).entered(),
@@ -170,13 +167,17 @@ fn listen_for_clients(listener: TcpListener, threads: Arc<Mutex<Vec<Thread>>>) {
                 Ok(()) => (),
                 Err(e) => error!("{e}"),
             }
-            threads2
+            let this_thread = std::thread::current().id();
+            CLIENT_THREADS
                 .lock()
                 .unwrap()
-                .retain(|t| t.id() != std::thread::current().id());
+                .retain(|t| t.id() != this_thread);
             info!("Cleaned up the thread");
         });
-        threads.lock().unwrap().push(join_handle.thread().clone());
+        CLIENT_THREADS
+            .lock()
+            .unwrap()
+            .push(join_handle.thread().clone());
     }
     error!("Listening socket was closed!");
     std::process::exit(1);
