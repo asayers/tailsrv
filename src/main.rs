@@ -187,7 +187,7 @@ fn init_client(mut conn: TcpStream) -> Result<()> {
         let mut conn = conn.try_clone()?;
         std::thread::spawn(move || std::io::copy(&mut conn, &mut std::io::sink()));
     }
-    let ret = handle_client(conn.try_clone()?, offset);
+    let ret = handle_client(&conn, offset);
     let _ = conn.shutdown(std::net::Shutdown::Both);
     ret
 }
@@ -211,8 +211,8 @@ fn read_header(conn: &mut TcpStream) -> Result<u64> {
     }
 }
 
-fn handle_client(conn: TcpStream, mut offset: u64) -> Result<()> {
-    // Send file data to the client; sleep until the file grows; repeat.
+/// Send file data to the client; sleep until the file grows; repeat.
+fn handle_client(conn: &TcpStream, mut offset: u64) -> Result<()> {
     loop {
         // How many bytes the client wants
         let file_len = FILE_LENGTH.load(Ordering::SeqCst) as usize;
@@ -228,7 +228,7 @@ fn handle_client(conn: TcpStream, mut offset: u64) -> Result<()> {
                 continue;
             };
             trace!("Sending {wanted} bytes from offset {offset}");
-            if let Err(e) = rustix::fs::sendfile(&conn, file, Some(&mut offset), wanted) {
+            if let Err(e) = rustix::fs::sendfile(conn, file, Some(&mut offset), wanted) {
                 match std::io::Error::from(e).kind() {
                     std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset => {
                         // The client hung up
