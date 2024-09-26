@@ -41,10 +41,16 @@ fn main() -> Result<()> {
         opts.journald,
     );
 
-    // Bind the listener first, so clients can start connecting immediately.
-    // It's fine for them to connect even before the file exists; of course,
-    // they won't recieve any data until it _does_ exist.
-    bind_listener(opts.port)?;
+    // Bind the listener socket.  We do this ASAP, so clients can start
+    // connecting immediately. It's fine for them to connect even before the
+    // file exists.  Of course, they won't recieve any data until it _does_
+    // exist.
+    let listen_addr = SocketAddr::new([0, 0, 0, 0].into(), opts.port);
+    let listener = TcpListener::bind(listen_addr)?;
+    info!(%listen_addr, "Bound socket");
+
+    // Handle incoming client connections in a separate thread
+    std::thread::spawn(move || listen_for_clients(listener));
 
     // We're ready to accept clients now; let systemd know it can start them
     #[cfg(feature = "sd-notify")]
@@ -109,20 +115,6 @@ fn wake_all_clients() {
     for t in CLIENT_THREADS.lock().unwrap().iter() {
         t.unpark();
     }
-}
-
-/// Bind the socket and start listening for client connections
-fn bind_listener(port: u16) -> Result<()> {
-    let listen_addr = SocketAddr::new([0, 0, 0, 0].into(), port);
-    let _g = info_span!("listener", addr = %listen_addr).entered();
-
-    let listener = TcpListener::bind(listen_addr)?;
-    info!("Bound socket");
-
-    std::thread::spawn(move || listen_for_clients(listener));
-    info!("Handling client connections");
-
-    Ok(())
 }
 
 /// Wait until the file exists and open it.  If it already exists then this
