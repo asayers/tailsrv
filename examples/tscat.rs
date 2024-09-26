@@ -1,4 +1,4 @@
-use clap::Parser;
+use bpaf::{Bpaf, Parser};
 use fd_lock::RwLock;
 use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
@@ -7,26 +7,26 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tracing::*;
 
-#[derive(Parser)]
+#[derive(Bpaf)]
 struct Opts {
-    /// The remote tailsrv to connect to
-    addr: SocketAddr,
     /// The file to save the stream to
-    #[clap(short, long)]
+    #[bpaf(short, long)]
     out: Option<PathBuf>,
     /// Send traces to journald instead of the terminal.
     #[cfg(feature = "tracing-journald")]
-    #[clap(long)]
     journald: bool,
     /// How often to ping the server to check for a dead connection
-    #[clap(long, default_value = "5")]
+    #[bpaf(fallback(5))]
     heartbeat_secs: u64,
+    /// The remote tailsrv to connect to
+    #[bpaf(positional)]
+    addr: SocketAddr,
 }
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 fn main() -> Result<()> {
-    let opts = Opts::parse();
+    let opts = opts().run();
     tailsrv::log_init(
         #[cfg(feature = "tracing-journald")]
         opts.journald,

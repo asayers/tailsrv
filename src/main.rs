@@ -1,4 +1,4 @@
-use clap::Parser;
+use bpaf::{Bpaf, Parser};
 use inotify::{EventMask, Inotify, WatchMask};
 use std::fs::File;
 use std::io::BufRead;
@@ -10,22 +10,21 @@ use std::sync::{Mutex, OnceLock};
 use std::thread::Thread;
 use tracing::*;
 
-#[derive(Parser)]
+#[derive(Bpaf)]
 struct Opts {
-    /// The file which will be broadcast to all clients
-    path: PathBuf,
     /// The port number on which to listen for new connections
-    #[clap(long, short)]
+    #[bpaf(long, short, argument("PORT"))]
     port: u16,
     /// By default tailsrv will quit when the underlying file is moved/deleted,
     /// causing any attached clients to be disconnected.  This option causes
     /// it to continue to run.
-    #[clap(long)]
     linger_after_file_is_gone: bool,
     /// Send traces to journald instead of the terminal.
     #[cfg(feature = "tracing-journald")]
-    #[clap(long)]
     journald: bool,
+    /// The file which will be broadcast to all clients
+    #[bpaf(positional("PATH"))]
+    path: PathBuf,
 }
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -35,7 +34,7 @@ static FILE: OnceLock<File> = OnceLock::new();
 static CLIENT_THREADS: Mutex<Vec<Thread>> = Mutex::new(vec![]);
 
 fn main() -> Result<()> {
-    let opts = Opts::parse();
+    let opts = opts().run();
     tailsrv::log_init(
         #[cfg(feature = "tracing-journald")]
         opts.journald,
