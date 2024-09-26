@@ -1,3 +1,7 @@
+## v0.7.2
+
+No user-visible changes.
+
 ## v0.7.1
 
 * Client connections will be closed upon encountering an I/O error.
