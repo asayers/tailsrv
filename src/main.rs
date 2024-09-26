@@ -224,7 +224,7 @@ fn handle_client(conn: TcpStream, mut offset: u64) -> Result<()> {
             std::thread::park();
         } else {
             let Some(file) = FILE.get() else {
-                error!("FILE_LENGTH is {file_len}, but FILE_FD isn't set yet. This is a bug.");
+                error!("FILE_LENGTH is {file_len}, but FILE isn't set yet. This is a bug.");
                 continue;
             };
             trace!("Sending {wanted} bytes from offset {offset}");
