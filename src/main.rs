@@ -1,8 +1,9 @@
 use bpaf::{Bpaf, Parser};
-use inotify::{EventMask, Inotify, WatchMask};
+use rustix::fs::inotify;
 use rustix::io::Errno;
 use std::fs::File;
 use std::io::BufRead;
+use std::mem::MaybeUninit;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -72,42 +73,42 @@ fn main() -> Result<()> {
     wake_all_clients();
 
     // Set up the inotify watch
-    let mut inotify = Inotify::init()?;
-    inotify.watches().add(
+    let ino_fd = inotify::init(inotify::CreateFlags::empty())?;
+    inotify::add_watch(
+        &ino_fd,
         &opts.path,
-        WatchMask::MODIFY | WatchMask::MOVE_SELF | WatchMask::ATTRIB,
+        inotify::WatchFlags::MODIFY | inotify::WatchFlags::MOVE_SELF | inotify::WatchFlags::ATTRIB,
     )?;
     info!("Created an inotify watch");
 
     // Monitor the file and wake up clients when it changes
+    let mut buf = [const { MaybeUninit::uninit() }; 1024];
+    let mut evs = inotify::Reader::new(&ino_fd, &mut buf);
     loop {
-        let mut buf = [0; 1024];
-        let events = inotify.read_events_blocking(&mut buf).unwrap();
-        for ev in events {
-            if ev.mask.intersects(EventMask::MOVE_SELF) {
-                info!("File was moved");
+        let ev = evs.next()?;
+        if ev.events().intersects(inotify::ReadFlags::MOVE_SELF) {
+            info!("File was moved");
+            if !opts.linger_after_file_is_gone {
+                std::process::exit(0);
+            }
+        } else if ev.events().intersects(inotify::ReadFlags::ATTRIB) {
+            // The DELETE_SELF event only occurs when the file is unlinked and all FDs are
+            // closed.  Since tailsrv itself keeps an FD open, this means we never recieve
+            // DELETE_SELF events.  Instead we have to rely on the ATTRIB event which occurs
+            // when the user unlinks the file (and at other times too).
+            if file.metadata()?.nlink() == 0 {
+                info!("File was deleted");
                 if !opts.linger_after_file_is_gone {
                     std::process::exit(0);
                 }
-            } else if ev.mask.intersects(EventMask::ATTRIB) {
-                // The DELETE_SELF event only occurs when the file is unlinked and all FDs are
-                // closed.  Since tailsrv itself keeps an FD open, this means we never recieve
-                // DELETE_SELF events.  Instead we have to rely on the ATTRIB event which occurs
-                // when the user unlinks the file (and at other times too).
-                if file.metadata()?.nlink() == 0 {
-                    info!("File was deleted");
-                    if !opts.linger_after_file_is_gone {
-                        std::process::exit(0);
-                    }
-                }
-            } else if ev.mask.contains(EventMask::MODIFY) {
-                let file_len = file.metadata().unwrap().len();
-                trace!("New file size: {}", file_len);
-                FILE_LENGTH.store(file_len, Ordering::SeqCst);
-                wake_all_clients();
-            } else {
-                warn!("Unknown inotify event: {ev:?}");
             }
+        } else if ev.events().contains(inotify::ReadFlags::MODIFY) {
+            let file_len = file.metadata().unwrap().len();
+            trace!("New file size: {}", file_len);
+            FILE_LENGTH.store(file_len, Ordering::SeqCst);
+            wake_all_clients();
+        } else {
+            warn!("Unknown inotify event: {ev:?}");
         }
     }
 }
