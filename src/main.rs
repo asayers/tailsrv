@@ -86,12 +86,12 @@ fn main() -> Result<()> {
     let mut evs = inotify::Reader::new(&ino_fd, &mut buf);
     loop {
         let ev = evs.next()?;
-        if ev.events().intersects(inotify::ReadFlags::MOVE_SELF) {
+        if ev.events().contains(inotify::ReadFlags::MOVE_SELF) {
             info!("File was moved");
             if !opts.linger_after_file_is_gone {
                 std::process::exit(0);
             }
-        } else if ev.events().intersects(inotify::ReadFlags::ATTRIB) {
+        } else if ev.events().contains(inotify::ReadFlags::ATTRIB) {
             // The DELETE_SELF event only occurs when the file is unlinked and all FDs are
             // closed.  Since tailsrv itself keeps an FD open, this means we never recieve
             // DELETE_SELF events.  Instead we have to rely on the ATTRIB event which occurs
