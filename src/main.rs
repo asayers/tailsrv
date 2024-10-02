@@ -159,10 +159,8 @@ fn listen_for_clients(listener: TcpListener) {
             }
         };
         let join_handle = std::thread::spawn(move || {
-            let _g = match conn.peer_addr() {
-                Ok(addr) => info_span!("client", %addr).entered(),
-                Err(e) => info_span!("client", no_addr = %e).entered(),
-            };
+            let client_id = conn.peer_addr().ok().map(|x| x.port());
+            let _g = info_span!("", client_id).entered();
             match init_client(conn) {
                 Ok(()) => (),
                 Err(e) => error!("{e}"),
