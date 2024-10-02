@@ -25,3 +25,4 @@ optional = true
 
 [dev-dependencies]
 fd-lock = "4.0.2"
+net2 = "0.2.39"

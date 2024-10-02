@@ -1,5 +1,6 @@
 use bpaf::{Bpaf, Parser};
 use fd_lock::RwLock;
+use net2::TcpStreamExt;
 use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
 use std::net::{SocketAddr, TcpStream};
@@ -58,27 +59,11 @@ fn mirror(
     heartbeat_secs: u64,
 ) -> Result<()> {
     let mut conn = TcpStream::connect(addr)?;
+    conn.set_keepalive(Some(Duration::from_secs(heartbeat_secs)))?;
     if start_from != 0 {
         info!("Starting from byte {start_from}");
     }
     writeln!(conn, "{start_from}")?;
-
-    {
-        let mut conn = conn.try_clone()?;
-        std::thread::spawn(move || loop {
-            // Send a newline charater back to tailsrv.  Tailsrv discards
-            // anything sent to it by a client, so this newline will be thrown
-            // away.  The purpose of this is to detect a dead TCP connection.
-            if let Err(e) = writeln!(conn) {
-                error!("{e}");
-                // panic!() kills only the current thread.  This takes down
-                // both threads.
-                std::process::exit(1);
-            }
-            std::thread::sleep(Duration::from_secs(heartbeat_secs));
-        });
-    }
-
     std::io::copy(&mut conn, &mut out)?;
     Ok(())
 }
