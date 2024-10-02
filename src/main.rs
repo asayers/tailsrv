@@ -180,13 +180,6 @@ fn init_client(mut conn: TcpStream) -> Result<()> {
     // The first thing the client will do is send a header
     let offset = read_header(&mut conn)?;
     info!("Starting from offset {offset}");
-    {
-        // Spawn a thread to read (and discard) anything send by the client.
-        // This is so that clients can use writability as way to test whether
-        // their connection is alive.
-        let mut conn = conn.try_clone()?;
-        std::thread::spawn(move || std::io::copy(&mut conn, &mut std::io::sink()));
-    }
     let ret = handle_client(&conn, offset);
     let _ = conn.shutdown(std::net::Shutdown::Both);
     ret
