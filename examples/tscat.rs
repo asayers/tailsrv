@@ -6,16 +6,12 @@ use std::io::{prelude::*, SeekFrom};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing::*;
 
 #[derive(Bpaf)]
 struct Opts {
     /// The file to save the stream to
     #[bpaf(short, long)]
     out: Option<PathBuf>,
-    /// Send traces to journald instead of the terminal.
-    #[cfg(feature = "tracing-journald")]
-    journald: bool,
     /// How often to ping the server to check for a dead connection
     #[bpaf(fallback(5))]
     heartbeat_secs: u64,
@@ -28,11 +24,6 @@ type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 fn main() -> Result<()> {
     let opts = opts().run();
-    tailsrv::log_init(
-        #[cfg(feature = "tracing-journald")]
-        opts.journald,
-    );
-
     if let Some(path) = &opts.out {
         // Open the file in append mode, creating it if it doesn't already
         // exist.
@@ -60,9 +51,6 @@ fn mirror(
 ) -> Result<()> {
     let mut conn = TcpStream::connect(addr)?;
     conn.set_keepalive(Some(Duration::from_secs(heartbeat_secs)))?;
-    if start_from != 0 {
-        info!("Starting from byte {start_from}");
-    }
     writeln!(conn, "{start_from}")?;
     std::io::copy(&mut conn, &mut out)?;
     Ok(())
