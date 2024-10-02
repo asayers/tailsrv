@@ -1,5 +1,6 @@
 use bpaf::{Bpaf, Parser};
 use inotify::{EventMask, Inotify, WatchMask};
+use rustix::io::Errno;
 use std::fs::File;
 use std::io::BufRead;
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -219,15 +220,15 @@ fn handle_client(conn: &TcpStream, mut offset: u64) -> Result<()> {
                 continue;
             };
             trace!("Sending {wanted} bytes from offset {offset}");
-            if let Err(e) = rustix::fs::sendfile(conn, file, Some(&mut offset), wanted) {
-                match std::io::Error::from(e).kind() {
-                    std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset => {
-                        // The client hung up
-                        info!("Socket closed by other side");
-                        return Ok(());
-                    }
-                    _ => return Err(e.into()),
+            let ret = rustix::fs::sendfile(conn, file, Some(&mut offset), wanted);
+            match ret {
+                Ok(_) => (),
+                Err(Errno::PIPE | Errno::CONNRESET) => {
+                    // The client hung up
+                    info!("Socket closed by other side");
+                    return Ok(());
                 }
+                Err(e) => return Err(e.into()),
             }
         }
     }
