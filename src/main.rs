@@ -180,9 +180,7 @@ fn init_client(mut conn: TcpStream) -> Result<()> {
     // The first thing the client will do is send a header
     let offset = read_header(&mut conn)?;
     info!("Starting from offset {offset}");
-    let ret = handle_client(&conn, offset);
-    let _ = conn.shutdown(std::net::Shutdown::Both);
-    ret
+    handle_client(&conn, offset)
 }
 
 fn read_header(conn: &mut TcpStream) -> Result<u64> {
