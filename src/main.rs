@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::Thread;
 use tracing::*;
+use tracing_subscriber::{prelude::*, EnvFilter};
 
 #[derive(Bpaf)]
 struct Opts {
@@ -35,7 +36,7 @@ static CLIENT_THREADS: Mutex<Vec<Thread>> = Mutex::new(vec![]);
 
 fn main() -> Result<()> {
     let opts = opts().run();
-    tailsrv::log_init(
+    log_init(
         #[cfg(feature = "tracing-journald")]
         opts.journald,
     );
@@ -239,4 +240,24 @@ fn handle_client(conn: &TcpStream, mut offset: u64) -> Result<()> {
             }
         }
     }
+}
+
+fn log_init(#[cfg(feature = "tracing-journald")] journald: bool) {
+    let subscriber = tracing_subscriber::registry();
+
+    // Respect RUST_LOG, falling back to INFO
+    let filter = EnvFilter::builder()
+        .with_default_directive(Level::INFO.into())
+        .from_env_lossy();
+    let subscriber = subscriber.with(filter);
+
+    #[cfg(feature = "tracing-journald")]
+    if opts.journald {
+        let subscriber = subscriber.with(tracing_journald::layer()?);
+        return subscriber.init();
+    }
+
+    let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    let subscriber = subscriber.with(layer);
+    subscriber.init();
 }
