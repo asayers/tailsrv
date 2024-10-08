@@ -66,7 +66,7 @@ fn main() -> Result<()> {
     let file = FILE.get().unwrap();
 
     let file_len = usize::try_from(file.metadata()?.len())?;
-    FILE_LENGTH.store(file_len, Ordering::SeqCst);
+    FILE_LENGTH.store(file_len, Ordering::Release);
     info!("Initial file size: {}kB", file_len / 1024);
 
     // Wake up any clients who were waiting for the file to exist
@@ -113,7 +113,7 @@ fn handle_file_event(ev: inotify::InotifyEvent, file: &File, linger: bool) -> Re
     if ev.events().contains(inotify::ReadFlags::MODIFY) {
         let file_len = usize::try_from(file.metadata().unwrap().len())?;
         trace!("New file size: {}", file_len);
-        FILE_LENGTH.store(file_len, Ordering::SeqCst);
+        FILE_LENGTH.store(file_len, Ordering::Release);
         wake_all_clients();
     }
     Ok(())
@@ -214,7 +214,7 @@ fn read_header(conn: &mut TcpStream) -> Result<usize> {
 fn handle_client(conn: &TcpStream, mut offset: usize) -> Result<()> {
     loop {
         // How many bytes the client wants
-        let file_len = FILE_LENGTH.load(Ordering::SeqCst);
+        let file_len = FILE_LENGTH.load(Ordering::Acquire);
         let wanted = file_len.saturating_sub(offset);
         if wanted == 0 {
             // We're all caught-up.  Wait for new data to be written
