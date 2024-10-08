@@ -67,7 +67,7 @@ fn main() -> Result<()> {
 
     let file_len = usize::try_from(file.metadata()?.len())?;
     FILE_LENGTH.store(file_len, Ordering::Release);
-    info!("Initial file size: {}kB", file_len / 1024);
+    info!("Initial file size: {} kiB", file_len / 1024);
 
     // Wake up any clients who were waiting for the file to exist
     wake_all_clients();
@@ -79,19 +79,24 @@ fn main() -> Result<()> {
         &opts.path,
         inotify::WatchFlags::MODIFY | inotify::WatchFlags::MOVE_SELF | inotify::WatchFlags::ATTRIB,
     )?;
-    info!("Created an inotify watch");
+    info!(
+        path = %opts.path.display(),
+        fd = ino_fd.as_raw_fd(),
+        "Created an inotify watch",
+    );
 
     // Monitor the file and wake up clients when it changes
+    info!("Starting runloop");
     let mut buf = [const { MaybeUninit::uninit() }; 1024];
     let mut evs = inotify::Reader::new(&ino_fd, &mut buf);
     loop {
         let ev = evs.next()?;
-        trace!("inotify event: {:?}", ev);
         handle_file_event(ev, file, opts.linger_after_file_is_gone)?;
     }
 }
 
 fn handle_file_event(ev: inotify::InotifyEvent, file: &File, linger: bool) -> Result<()> {
+    trace!("inotify event: {:?}", ev);
     if ev.events().contains(inotify::ReadFlags::MOVE_SELF) {
         info!("File was moved");
         if !linger {
@@ -129,7 +134,7 @@ fn wake_all_clients() {
 /// returns immediately.  If not, we just poll every few seconds.  I don't
 /// think it's important to be extremely prompt here.
 fn wait_for_file(path: &Path) -> Result<File> {
-    let _g = info_span!("file", path = %path.display()).entered();
+    let _g = info_span!("", path = %path.display()).entered();
     let file = loop {
         match File::open(path) {
             Ok(f) => break f,
@@ -185,7 +190,6 @@ fn init_client(mut conn: TcpStream) -> Result<()> {
     info!("Connected");
     // The first thing the client will do is send a header
     let offset = read_header(&mut conn)?;
-    info!("Starting from offset {offset}");
     handle_client(&conn, offset)
 }
 
@@ -207,6 +211,8 @@ fn read_header(conn: &mut TcpStream) -> Result<usize> {
             cur_len.saturating_add_signed(header)
         }
     };
+    info!("Starting from initial offset {offset}");
+
     Ok(offset)
 }
 
