@@ -1,6 +1,10 @@
 use bpaf::{Bpaf, Parser};
+use rustix::event::EventfdFlags;
+use rustix::fd::{AsRawFd, OwnedFd};
 use rustix::fs::inotify;
 use rustix::io::Errno;
+use rustix_uring::IoUring;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::BufRead;
 use std::mem::MaybeUninit;
@@ -8,10 +12,11 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::thread::Thread;
+use std::sync::{LazyLock, Mutex};
 use tracing::*;
 use tracing_subscriber::{prelude::*, EnvFilter};
+
+pub const FLAG_POLLIN: u32 = 0x1;
 
 #[derive(Bpaf)]
 struct Opts {
@@ -33,8 +38,9 @@ struct Opts {
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 static FILE_LENGTH: AtomicUsize = AtomicUsize::new(0);
-static FILE: OnceLock<File> = OnceLock::new();
-static CLIENT_THREADS: Mutex<Vec<Thread>> = Mutex::new(vec![]);
+static CLIENTS: Mutex<BTreeMap<u16, Client>> = Mutex::new(BTreeMap::new());
+static EVENTFD: LazyLock<OwnedFd> =
+    LazyLock::new(|| rustix::event::eventfd(0, EventfdFlags::NONBLOCK).unwrap());
 
 fn main() -> Result<()> {
     let opts = opts().run();
@@ -42,6 +48,20 @@ fn main() -> Result<()> {
         #[cfg(feature = "tracing-journald")]
         opts.journald,
     );
+
+    let mut uring = IoUring::new(256)?;
+    info!("Set up the io_uring");
+
+    info!(fd = EVENTFD.as_raw_fd(), "Created an eventfd");
+    let poll_eventfd = rustix_uring::opcode::PollAdd::new(
+        rustix_uring::types::Fd(EVENTFD.as_raw_fd()),
+        FLAG_POLLIN,
+    )
+    .multi(true)
+    .build()
+    .user_data(UserData::NewClient.into());
+    unsafe { uring.submission().push(&poll_eventfd)? };
+    info!("Polling the eventfd for events");
 
     // Bind the listener socket.  We do this ASAP, so clients can start
     // connecting immediately. It's fine for them to connect even before the
@@ -61,19 +81,16 @@ fn main() -> Result<()> {
     // Now we wait until the file exists
     let file = wait_for_file(&opts.path)?;
 
-    // Initialise tailsrv's state
-    FILE.set(file).map_err(|_| "Set FILE twice")?;
-    let file = FILE.get().unwrap();
-
     let file_len = usize::try_from(file.metadata()?.len())?;
     FILE_LENGTH.store(file_len, Ordering::Release);
     info!("Initial file size: {} kiB", file_len / 1024);
 
-    // Wake up any clients who were waiting for the file to exist
-    wake_all_clients();
+    uring.submitter().register_files(&[file.as_raw_fd()])?;
+    let file_fd = rustix_uring::types::Fixed(0);
+    info!(?file_fd, "Registered file with the io_uring");
 
     // Set up the inotify watch
-    let ino_fd = inotify::init(inotify::CreateFlags::empty())?;
+    let ino_fd = inotify::init(inotify::CreateFlags::NONBLOCK)?;
     inotify::add_watch(
         &ino_fd,
         &opts.path,
@@ -85,14 +102,169 @@ fn main() -> Result<()> {
         "Created an inotify watch",
     );
 
-    // Monitor the file and wake up clients when it changes
+    let poll_ino = rustix_uring::opcode::PollAdd::new(
+        rustix_uring::types::Fd(ino_fd.as_raw_fd()),
+        FLAG_POLLIN,
+    )
+    .multi(true)
+    .build()
+    .user_data(UserData::Inotify.into());
+    unsafe { uring.submission().push(&poll_ino)? };
+    info!("Polling the inotify watch for events");
+
     info!("Starting runloop");
-    let mut buf = [const { MaybeUninit::uninit() }; 1024];
-    let mut evs = inotify::Reader::new(&ino_fd, &mut buf);
+    let mut reqs = VecDeque::new();
     loop {
-        let ev = evs.next()?;
-        handle_file_event(ev, file, opts.linger_after_file_is_gone)?;
+        issue_requests(&mut reqs, &mut uring, file_fd)?;
+        trace!("Waiting for wake-ups");
+        uring.submit_and_wait(1)?;
+        trace!("Woke up!");
+        handle_completions(&mut uring, &file, &ino_fd, opts.linger_after_file_is_gone)?;
     }
+}
+
+fn issue_requests(
+    reqs: &mut VecDeque<rustix_uring::squeue::Entry>,
+    uring: &mut IoUring,
+    file_fd: rustix_uring::types::Fixed,
+) -> Result<()> {
+    let file_len = FILE_LENGTH.load(Ordering::Acquire);
+    for (&client_id, client) in CLIENTS.lock().unwrap().iter_mut() {
+        if client.offset < file_len && !client.in_flight {
+            trace!(
+                client_id,
+                file_len,
+                offset = client.offset,
+                "Filling and draining the pipe"
+            );
+            // Why fill and drain a pipe?
+            //
+            // There's no sendfile() opcode for io_uring (yet).  However,
+            // we can emulate it by splicing once from the file to a pipe,
+            // and then again from the pipe to the socket.  This is exactly
+            // how sendfile() works under the hood, so there should be no
+            // performance impact from this.
+            reqs.push_back(
+                rustix_uring::opcode::Splice::new(
+                    file_fd,
+                    i64::try_from(client.offset).unwrap(),
+                    rustix_uring::types::Fd(client.pipe_wtr.as_raw_fd()),
+                    -1,
+                    u32::MAX,
+                )
+                .build()
+                // Why IO_HARDLINK, not just IO_LINK?
+                //
+                // We're asking the kernel to splice u32::MAX bytes from
+                // the file into the pipe.  This is certainly going to
+                // fail - the kernel will splice in at most u16::MAX bytes,
+                // possibly less (even if there are more bytes than this
+                // waiting in the file). It's ok though - the kernel will
+                // splice as much data as it can into the pipe and tell us
+                // how much it managed.  That's what we want.
+                //
+                // However, if we used IO_LINK here then the second splice
+                // (pipe -> socket) would be cancelled.  That's not what we
+                // want!  IO_HARDLINK means "sequence these requests, but
+                // don't cancel the second if the first fails".
+                .flags(rustix_uring::squeue::Flags::IO_HARDLINK)
+                .user_data(UserData::FillPipe(client_id).into()),
+            );
+            reqs.push_back(
+                rustix_uring::opcode::Splice::new(
+                    rustix_uring::types::Fd(client.pipe_rdr.as_raw_fd()),
+                    -1,
+                    rustix_uring::types::Fd(client.conn.as_raw_fd()),
+                    -1,
+                    u32::MAX,
+                )
+                .build()
+                .user_data(UserData::DrainPipe(client_id).into()),
+            );
+            client.in_flight = true;
+        }
+    }
+    trace!("Pushing {} reqs to the ring:", reqs.len());
+    while let Some(req) = reqs.front() {
+        let is_full = unsafe { uring.submission().push(req) }.is_err();
+        if is_full {
+            trace!("Queue is full; submit and retry");
+            uring.submit()?;
+        } else {
+            trace!(">> {req:?}");
+            reqs.pop_front();
+        }
+    }
+    Ok(())
+}
+
+fn handle_completions(
+    uring: &mut IoUring,
+    file: &File,
+    ino_fd: &OwnedFd,
+    linger: bool,
+) -> Result<()> {
+    for cqe in uring.completion() {
+        let user_data = UserData::try_from(cqe.user_data())?;
+        let result = cqe.result();
+        let result = usize::try_from(result).map_err(|_| Errno::from_raw_os_error(-result));
+        trace!("io_uring completion: {:?}: {:?}", user_data, result);
+        match (user_data, result) {
+            (UserData::NewClient, Ok(_)) => {
+                trace!("New client");
+                assert!(cqe.flags().contains(rustix_uring::cqueue::Flags::MORE));
+                let mut buf = [0; 8];
+                match rustix::io::read(&*EVENTFD, &mut buf) {
+                    Ok(8) | Err(Errno::AGAIN) => {
+                        let x = u64::from_ne_bytes(buf);
+                        trace!("Received notification of {x} new clients");
+                    }
+                    Ok(x) => error!("Incomplete read: {x}"),
+                    Err(e) => error!("{e}"),
+                }
+            }
+            (UserData::Inotify, Ok(_)) => {
+                assert!(cqe.flags().contains(rustix_uring::cqueue::Flags::MORE));
+                let mut buf = [const { MaybeUninit::uninit() }; 1024];
+                let mut evs = inotify::Reader::new(&ino_fd, &mut buf);
+                loop {
+                    match evs.next() {
+                        Ok(ev) => handle_file_event(ev, file, linger)?,
+                        Err(Errno::AGAIN) => break,
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+            }
+            (UserData::NewClient | UserData::Inotify, Err(e)) => error!("{e}"),
+            (UserData::FillPipe(client_id), Ok(n_copied)) => {
+                let _g = info_span!("", client_id).entered();
+                trace!("Filled pipe with {} bytes", n_copied);
+                assert!(n_copied != 0);
+                let mut clients = CLIENTS.lock().unwrap();
+                let client = clients.get_mut(&client_id).unwrap();
+                client.bytes_in_pipe += n_copied;
+            }
+            (UserData::DrainPipe(client_id), Ok(n_sent)) => {
+                let _g = info_span!("", client_id).entered();
+                trace!("Sent {} bytes to client", n_sent);
+                let mut clients = CLIENTS.lock().unwrap();
+                let client = clients.get_mut(&client_id).unwrap();
+                assert_eq!(client.bytes_in_pipe, n_sent);
+                client.offset += n_sent;
+                client.in_flight = false;
+                client.bytes_in_pipe = 0;
+            }
+            (UserData::FillPipe(client_id) | UserData::DrainPipe(client_id), Err(e)) => {
+                let _g = info_span!("", client_id).entered();
+                match e {
+                    Errno::PIPE | Errno::CONNRESET => info!("Socket closed by other side"),
+                    _ => error!("{e}"),
+                }
+                CLIENTS.lock().unwrap().remove(&client_id);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn handle_file_event(ev: inotify::InotifyEvent, file: &File, linger: bool) -> Result<()> {
@@ -119,15 +291,8 @@ fn handle_file_event(ev: inotify::InotifyEvent, file: &File, linger: bool) -> Re
         let file_len = usize::try_from(file.metadata().unwrap().len())?;
         trace!("New file size: {}", file_len);
         FILE_LENGTH.store(file_len, Ordering::Release);
-        wake_all_clients();
     }
     Ok(())
-}
-
-fn wake_all_clients() {
-    for t in CLIENT_THREADS.lock().unwrap().iter() {
-        t.unpark();
-    }
 }
 
 /// Wait until the file exists and open it.  If it already exists then this
@@ -166,29 +331,18 @@ fn listen_for_clients(listener: TcpListener) {
                 continue;
             }
         };
-        let join_handle = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let _g = info_span!("", client_id).entered();
             match Client::new(conn) {
                 Ok(client) => {
                     trace!("Prepared client: {client:?}");
-                    match client.run() {
-                        Ok(()) => (),
-                        Err(e) => error!("{e}"),
-                    }
+                    CLIENTS.lock().unwrap().insert(client_id, client);
+                    rustix::io::write(&*EVENTFD, &1u64.to_ne_bytes()).unwrap();
+                    trace!("Wrote to eventfd");
                 }
                 Err(e) => error!("{e}"),
             }
-            let this_thread = std::thread::current().id();
-            CLIENT_THREADS
-                .lock()
-                .unwrap()
-                .retain(|t| t.id() != this_thread);
-            info!("Cleaned up the thread");
         });
-        CLIENT_THREADS
-            .lock()
-            .unwrap()
-            .push(join_handle.thread().clone());
     }
     error!("Listening socket was closed!");
     std::process::exit(1);
@@ -198,6 +352,10 @@ fn listen_for_clients(listener: TcpListener) {
 struct Client {
     conn: TcpStream,
     offset: usize,
+    bytes_in_pipe: usize,
+    in_flight: bool,
+    pipe_rdr: OwnedFd,
+    pipe_wtr: OwnedFd,
 }
 
 impl Client {
@@ -222,37 +380,52 @@ impl Client {
         };
         info!("Starting from initial offset {offset}");
 
-        Ok(Client { conn, offset })
+        let (pipe_rdr, pipe_wtr) = rustix::pipe::pipe()?;
+        Ok(Client {
+            conn,
+            offset,
+            bytes_in_pipe: 0,
+            in_flight: false,
+            pipe_rdr,
+            pipe_wtr,
+        })
     }
+}
 
-    /// Send file data to the client; sleep until the file grows; repeat.
-    fn run(&mut self) -> Result<()> {
-        loop {
-            // How many bytes the client wants
-            let file_len = FILE_LENGTH.load(Ordering::Acquire);
-            let wanted = file_len.saturating_sub(offset);
-            if wanted == 0 {
-                // We're all caught-up.  Wait for new data to be written
-                // to the file before continuing.
-                trace!("Waiting for changes");
-                std::thread::park();
-            } else {
-                let Some(file) = FILE.get() else {
-                    error!("FILE_LENGTH is {file_len}, but FILE isn't set yet. This is a bug.");
-                    continue;
-                };
-                trace!("Sending {wanted} bytes from offset {offset}");
-                let ret = rustix::fs::sendfile(conn, file, Some(&mut offset), wanted);
-                match ret {
-                    Ok(_) => (),
-                    Err(Errno::PIPE | Errno::CONNRESET) => {
-                        // The client hung up
-                        info!("Socket closed by other side");
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
+#[derive(Debug)]
+enum UserData {
+    NewClient,
+    Inotify,
+    FillPipe(u16),
+    DrainPipe(u16),
+}
+const FILL_FROM: u64 = 100_000;
+const FILL_TO: u64 = FILL_FROM + u16::MAX as u64;
+const DRAIN_FROM: u64 = 200_000;
+const DRAIN_TO: u64 = DRAIN_FROM + u16::MAX as u64;
+impl From<UserData> for u64 {
+    fn from(value: UserData) -> Self {
+        match value {
+            UserData::NewClient => 0,
+            UserData::Inotify => 1,
+            UserData::FillPipe(port) => u64::from(port) + FILL_FROM,
+            UserData::DrainPipe(port) => u64::from(port) + DRAIN_FROM,
+        }
+    }
+}
+impl TryFrom<u64> for UserData {
+    type Error = Box<dyn std::error::Error>;
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(UserData::NewClient),
+            1 => Ok(UserData::Inotify),
+            FILL_FROM..FILL_TO => Ok(UserData::FillPipe(
+                u16::try_from(value - FILL_FROM).unwrap(),
+            )),
+            DRAIN_FROM..DRAIN_TO => Ok(UserData::DrainPipe(
+                u16::try_from(value - DRAIN_FROM).unwrap(),
+            )),
+            _ => Err(format!("Unknown user data: {value}").into()),
         }
     }
 }

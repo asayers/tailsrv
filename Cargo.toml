@@ -10,7 +10,8 @@ edition = "2021"
 
 [dependencies]
 bpaf = { version = "0.9.14", features = ["derive"] }
-rustix = { version = "0.38.37", features = ["fs"] }
+rustix = { version = "0.38.37", features = ["fs", "mm", "pipe"] }
+rustix-uring = "0.2.0"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
