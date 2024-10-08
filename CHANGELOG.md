@@ -1,3 +1,14 @@
+## 0.8.0
+
+* There's a new "tsmirror" example program
+* tscat (and tsmirror) now use TCP_KEEPALIVE to detect a dead connection
+* Tailsrv no longer reads data sent to it by clients
+
+The point of this feature was to allow client to detect a dead connection by
+periodically sending dummy data to the server.  However, it turns out that's
+exactly what TCP_KEEPALIVE is for!  Removing the reading functionality is a
+simplification (as evidenced by the bugfix in 0.7.1).
+
 ## v0.7.2
 
 No user-visible changes.

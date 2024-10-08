@@ -1,6 +1,6 @@
 [package]
 name = "tailsrv"
-version = "0.7.2"
+version = "0.8.0"
 description = "A high-performance file-streaming server"
 readme = "README.md"
 repository = "https://github.com/asayers/tailsrv"
