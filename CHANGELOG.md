@@ -1,3 +1,19 @@
+## 0.9.0
+
+* Re-architect to use io_uring
+
+There are no changes to the semantics, and the latency and throughput are
+roughly the same as they were in 0.8.0.  However, this release changes the way
+tailsrv uses system resources:
+
+* It spawns fewer threads.  In 0.8.0 there was one thread per client.  In 0.9.0
+  there is a small fixed number of threads.  This means that, when there are
+  many (hundreds/thousands) of clients, tailsrv 0.9 is far more friendly to your
+  system than tailsrv 0.8 was.
+* It uses more file descriptors.  In 0.8.0 we used one fd per client (the
+  socket).  In 0.9.0 we use 3 fds per client (the socket and a pipe).  If you
+  expect a large number of clients, please set `ulimit -n` accordingly.
+
 ## 0.8.0
 
 * There's a new "tsmirror" example program
