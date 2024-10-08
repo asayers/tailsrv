@@ -7,7 +7,7 @@ use std::mem::MaybeUninit;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::Thread;
 use tracing::*;
@@ -32,7 +32,7 @@ struct Opts {
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
-static FILE_LENGTH: AtomicU64 = AtomicU64::new(0);
+static FILE_LENGTH: AtomicUsize = AtomicUsize::new(0);
 static FILE: OnceLock<File> = OnceLock::new();
 static CLIENT_THREADS: Mutex<Vec<Thread>> = Mutex::new(vec![]);
 
@@ -65,7 +65,7 @@ fn main() -> Result<()> {
     FILE.set(file).map_err(|_| "Set FILE twice")?;
     let file = FILE.get().unwrap();
 
-    let file_len = file.metadata()?.len();
+    let file_len = usize::try_from(file.metadata()?.len())?;
     FILE_LENGTH.store(file_len, Ordering::SeqCst);
     info!("Initial file size: {}kB", file_len / 1024);
 
@@ -111,7 +111,7 @@ fn handle_file_event(ev: inotify::InotifyEvent, file: &File, linger: bool) -> Re
         }
     }
     if ev.events().contains(inotify::ReadFlags::MODIFY) {
-        let file_len = file.metadata().unwrap().len();
+        let file_len = usize::try_from(file.metadata().unwrap().len())?;
         trace!("New file size: {}", file_len);
         FILE_LENGTH.store(file_len, Ordering::SeqCst);
         wake_all_clients();
@@ -189,7 +189,7 @@ fn init_client(mut conn: TcpStream) -> Result<()> {
     handle_client(&conn, offset)
 }
 
-fn read_header(conn: &mut TcpStream) -> Result<u64> {
+fn read_header(conn: &mut TcpStream) -> Result<usize> {
     // Read the header
     let mut buf = String::new();
     std::io::BufReader::new(conn).read_line(&mut buf)?;
@@ -197,23 +197,25 @@ fn read_header(conn: &mut TcpStream) -> Result<u64> {
     // TODO: length limit
 
     // Parse the header (it's just a signed int)
-    let header: i64 = buf.as_str().trim().parse()?;
+    let header: isize = buf.as_str().trim().parse()?;
 
     // Resolve the header to a byte offset
-    if header >= 0 {
-        Ok(u64::try_from(header)?)
-    } else {
-        let cur_len = FILE_LENGTH.load(Ordering::SeqCst);
-        Ok(cur_len.saturating_add_signed(header))
-    }
+    let offset = match usize::try_from(header) {
+        Ok(x) => x,
+        Err(_) => {
+            let cur_len = FILE_LENGTH.load(Ordering::Acquire);
+            cur_len.saturating_add_signed(header)
+        }
+    };
+    Ok(offset)
 }
 
 /// Send file data to the client; sleep until the file grows; repeat.
-fn handle_client(conn: &TcpStream, mut offset: u64) -> Result<()> {
+fn handle_client(conn: &TcpStream, mut offset: usize) -> Result<()> {
     loop {
         // How many bytes the client wants
-        let file_len = FILE_LENGTH.load(Ordering::SeqCst) as usize;
-        let wanted = file_len.saturating_sub(offset as usize);
+        let file_len = FILE_LENGTH.load(Ordering::SeqCst);
+        let wanted = file_len.saturating_sub(offset);
         if wanted == 0 {
             // We're all caught-up.  Wait for new data to be written
             // to the file before continuing.
