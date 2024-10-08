@@ -156,7 +156,10 @@ fn wait_for_file(path: &Path) -> Result<File> {
 
 fn listen_for_clients(listener: TcpListener) {
     for conn in listener.incoming() {
-        let conn = match conn {
+        let (conn, client_id) = match conn.and_then(|c| {
+            let port = c.peer_addr()?.port();
+            Ok((c, port))
+        }) {
             Ok(x) => x,
             Err(e) => {
                 error!("Bad connection: {e}");
@@ -164,7 +167,6 @@ fn listen_for_clients(listener: TcpListener) {
             }
         };
         let join_handle = std::thread::spawn(move || {
-            let client_id = conn.peer_addr().ok().map(|x| x.port());
             let _g = info_span!("", client_id).entered();
             match Client::new(conn) {
                 Ok(client) => {
