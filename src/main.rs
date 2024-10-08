@@ -166,8 +166,14 @@ fn listen_for_clients(listener: TcpListener) {
         let join_handle = std::thread::spawn(move || {
             let client_id = conn.peer_addr().ok().map(|x| x.port());
             let _g = info_span!("", client_id).entered();
-            match init_client(conn) {
-                Ok(()) => (),
+            match Client::new(conn) {
+                Ok(client) => {
+                    trace!("Prepared client: {client:?}");
+                    match client.run() {
+                        Ok(()) => (),
+                        Err(e) => error!("{e}"),
+                    }
+                }
                 Err(e) => error!("{e}"),
             }
             let this_thread = std::thread::current().id();
@@ -186,62 +192,64 @@ fn listen_for_clients(listener: TcpListener) {
     std::process::exit(1);
 }
 
-fn init_client(mut conn: TcpStream) -> Result<()> {
-    info!("Connected");
-    // The first thing the client will do is send a header
-    let offset = read_header(&mut conn)?;
-    handle_client(&conn, offset)
+#[derive(Debug)]
+struct Client {
+    conn: TcpStream,
+    offset: usize,
 }
 
-fn read_header(conn: &mut TcpStream) -> Result<usize> {
-    // Read the header
-    let mut buf = String::new();
-    std::io::BufReader::new(conn).read_line(&mut buf)?;
-    // TODO: timeout
-    // TODO: length limit
+impl Client {
+    fn new(mut conn: TcpStream) -> Result<Client> {
+        info!("Connected");
+        // The first thing the client will do is send a header
+        // TODO: timeout
+        // TODO: length limit
+        let mut buf = String::new();
+        std::io::BufReader::new(&mut conn).read_line(&mut buf)?;
 
-    // Parse the header (it's just a signed int)
-    let header: isize = buf.as_str().trim().parse()?;
+        // Parse the header (it's just a signed int)
+        let header: isize = buf.as_str().trim().parse()?;
 
-    // Resolve the header to a byte offset
-    let offset = match usize::try_from(header) {
-        Ok(x) => x,
-        Err(_) => {
-            let cur_len = FILE_LENGTH.load(Ordering::Acquire);
-            cur_len.saturating_add_signed(header)
-        }
-    };
-    info!("Starting from initial offset {offset}");
+        // Resolve the header to a byte offset
+        let offset = match usize::try_from(header) {
+            Ok(x) => x,
+            Err(_) => {
+                let cur_len = FILE_LENGTH.load(Ordering::Acquire);
+                cur_len.saturating_add_signed(header)
+            }
+        };
+        info!("Starting from initial offset {offset}");
 
-    Ok(offset)
-}
+        Ok(Client { conn, offset })
+    }
 
-/// Send file data to the client; sleep until the file grows; repeat.
-fn handle_client(conn: &TcpStream, mut offset: usize) -> Result<()> {
-    loop {
-        // How many bytes the client wants
-        let file_len = FILE_LENGTH.load(Ordering::Acquire);
-        let wanted = file_len.saturating_sub(offset);
-        if wanted == 0 {
-            // We're all caught-up.  Wait for new data to be written
-            // to the file before continuing.
-            trace!("Waiting for changes");
-            std::thread::park();
-        } else {
-            let Some(file) = FILE.get() else {
-                error!("FILE_LENGTH is {file_len}, but FILE isn't set yet. This is a bug.");
-                continue;
-            };
-            trace!("Sending {wanted} bytes from offset {offset}");
-            let ret = rustix::fs::sendfile(conn, file, Some(&mut offset), wanted);
-            match ret {
-                Ok(_) => (),
-                Err(Errno::PIPE | Errno::CONNRESET) => {
-                    // The client hung up
-                    info!("Socket closed by other side");
-                    return Ok(());
+    /// Send file data to the client; sleep until the file grows; repeat.
+    fn run(&mut self) -> Result<()> {
+        loop {
+            // How many bytes the client wants
+            let file_len = FILE_LENGTH.load(Ordering::Acquire);
+            let wanted = file_len.saturating_sub(offset);
+            if wanted == 0 {
+                // We're all caught-up.  Wait for new data to be written
+                // to the file before continuing.
+                trace!("Waiting for changes");
+                std::thread::park();
+            } else {
+                let Some(file) = FILE.get() else {
+                    error!("FILE_LENGTH is {file_len}, but FILE isn't set yet. This is a bug.");
+                    continue;
+                };
+                trace!("Sending {wanted} bytes from offset {offset}");
+                let ret = rustix::fs::sendfile(conn, file, Some(&mut offset), wanted);
+                match ret {
+                    Ok(_) => (),
+                    Err(Errno::PIPE | Errno::CONNRESET) => {
+                        // The client hung up
+                        info!("Socket closed by other side");
+                        return Ok(());
+                    }
+                    Err(e) => return Err(e.into()),
                 }
-                Err(e) => return Err(e.into()),
             }
         }
     }
