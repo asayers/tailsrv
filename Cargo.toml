@@ -25,4 +25,5 @@ optional = true
 
 [dev-dependencies]
 fd-lock = "4.0.2"
+liveterm = "0.3.0"
 net2 = "0.2.39"
