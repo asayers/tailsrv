@@ -14,16 +14,13 @@ rustix = { version = "0.38.37", features = ["fs", "mm", "pipe"] }
 rustix-uring = "0.2.0"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-
-[dependencies.tracing-journald]
-version = "0.3"
-optional = true
-
-[dependencies.sd-notify]
-version = "0.4"
-optional = true
+tracing-journald = { version = "0.3", optional = true }
+sd-notify = { version = "0.4", optional = true }
 
 [dev-dependencies]
 fd-lock = "4.0.2"
 liveterm = "0.3.0"
 net2 = "0.2.39"
+
+[features]
+systemd = ["tracing-journald", "sd-notify"]
