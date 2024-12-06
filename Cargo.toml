@@ -9,11 +9,11 @@ authors = ["Alex Sayers <alex.sayers@gmail.com>"]
 edition = "2021"
 
 [dependencies]
-bpaf = { version = "0.9.14", features = ["derive"] }
-rustix = { version = "0.38.37", features = ["fs", "mm", "pipe"] }
+bpaf = { version = "0.9.15", features = ["derive"] }
+rustix = { version = "0.38.41", features = ["fs", "mm", "pipe"] }
 rustix-uring = "0.2.0"
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tracing-journald = { version = "0.3", optional = true }
 sd-notify = { version = "0.4", optional = true }
 
