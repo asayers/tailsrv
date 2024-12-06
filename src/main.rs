@@ -440,8 +440,8 @@ fn log_init(#[cfg(feature = "tracing-journald")] journald: bool) {
     let subscriber = subscriber.with(filter);
 
     #[cfg(feature = "tracing-journald")]
-    if opts.journald {
-        let subscriber = subscriber.with(tracing_journald::layer()?);
+    if journald {
+        let subscriber = subscriber.with(tracing_journald::layer().unwrap());
         return subscriber.init();
     }
 
