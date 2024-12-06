@@ -1,3 +1,7 @@
+## 0.9.1
+
+* Fix a bug preventing the (optional) journald integration from compiling.
+
 ## 0.9.0
 
 * Re-architect to use io_uring
