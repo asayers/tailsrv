@@ -130,7 +130,12 @@ fn issue_requests(
 ) -> Result<()> {
     let file_len = FILE_LENGTH.load(Ordering::Acquire);
     for (&client_id, client) in CLIENTS.lock().unwrap().iter_mut() {
-        if client.offset < file_len && !client.in_flight {
+        if client.in_flight {
+            // Nothing to do
+        } else if client.bytes_in_pipe > 0 {
+            trace!("Payload only partially delivered. Retrying...");
+            reqs.push_back(drain_pipe(client_id, client));
+        } else if client.offset < file_len {
             trace!(
                 client_id,
                 file_len,
@@ -258,10 +263,9 @@ fn handle_completions(
                 trace!("Sent {} bytes to client", n_sent);
                 let mut clients = CLIENTS.lock().unwrap();
                 let client = clients.get_mut(&client_id).unwrap();
-                assert_eq!(client.bytes_in_pipe, n_sent);
+                client.bytes_in_pipe -= n_sent;
                 client.offset += n_sent;
                 client.in_flight = false;
-                client.bytes_in_pipe = 0;
             }
             (UserData::FillPipe(client_id) | UserData::DrainPipe(client_id), Err(e)) => {
                 let _g = info_span!("", client_id).entered();
