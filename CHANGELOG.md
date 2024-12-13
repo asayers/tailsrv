@@ -1,3 +1,7 @@
+## 0.9.2
+
+* Fix a severe bug where tailsrv would crashs when clients disconnect.
+
 ## 0.9.1
 
 * Fix a bug preventing the (optional) journald integration from compiling.
