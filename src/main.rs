@@ -144,43 +144,24 @@ fn issue_requests(
             // and then again from the pipe to the socket.  This is exactly
             // how sendfile() works under the hood, so there should be no
             // performance impact from this.
-            reqs.push_back(
-                rustix_uring::opcode::Splice::new(
-                    file_fd,
-                    i64::try_from(client.offset).unwrap(),
-                    rustix_uring::types::Fd(client.pipe_wtr.as_raw_fd()),
-                    -1,
-                    u32::MAX,
-                )
-                .build()
-                // Why IO_HARDLINK, not just IO_LINK?
-                //
-                // We're asking the kernel to splice u32::MAX bytes from
-                // the file into the pipe.  This is certainly going to
-                // fail - the kernel will splice in at most u16::MAX bytes,
-                // possibly less (even if there are more bytes than this
-                // waiting in the file). It's ok though - the kernel will
-                // splice as much data as it can into the pipe and tell us
-                // how much it managed.  That's what we want.
-                //
-                // However, if we used IO_LINK here then the second splice
-                // (pipe -> socket) would be cancelled.  That's not what we
-                // want!  IO_HARDLINK means "sequence these requests, but
-                // don't cancel the second if the first fails".
-                .flags(rustix_uring::squeue::Flags::IO_HARDLINK)
-                .user_data(UserData::FillPipe(client_id).into()),
-            );
-            reqs.push_back(
-                rustix_uring::opcode::Splice::new(
-                    rustix_uring::types::Fd(client.pipe_rdr.as_raw_fd()),
-                    -1,
-                    rustix_uring::types::Fd(client.conn.as_raw_fd()),
-                    -1,
-                    u32::MAX,
-                )
-                .build()
-                .user_data(UserData::DrainPipe(client_id).into()),
-            );
+            let fill = fill_pipe(client_id, client, file_fd);
+            let drain = drain_pipe(client_id, client);
+            // Why IO_HARDLINK, not just IO_LINK?
+            //
+            // We're asking the kernel to splice u32::MAX bytes from
+            // the file into the pipe.  This is certainly going to
+            // fail - the kernel will splice in at most u16::MAX bytes,
+            // possibly less (even if there are more bytes than this
+            // waiting in the file). It's ok though - the kernel will
+            // splice as much data as it can into the pipe and tell us
+            // how much it managed.  That's what we want.
+            //
+            // However, if we used IO_LINK here then the second splice
+            // (pipe -> socket) would be cancelled.  That's not what we
+            // want!  IO_HARDLINK means "sequence these requests, but
+            // don't cancel the second if the first fails".
+            let fill = fill.flags(rustix_uring::squeue::Flags::IO_HARDLINK);
+            reqs.extend([fill, drain]);
             client.in_flight = true;
         }
     }
@@ -196,6 +177,34 @@ fn issue_requests(
         }
     }
     Ok(())
+}
+
+fn fill_pipe(
+    client_id: u16,
+    client: &Client,
+    file_fd: rustix_uring::types::Fixed,
+) -> rustix_uring::squeue::Entry {
+    rustix_uring::opcode::Splice::new(
+        file_fd,
+        i64::try_from(client.offset).unwrap(),
+        rustix_uring::types::Fd(client.pipe_wtr.as_raw_fd()),
+        -1,
+        u32::MAX,
+    )
+    .build()
+    .user_data(UserData::FillPipe(client_id).into())
+}
+
+fn drain_pipe(client_id: u16, client: &Client) -> rustix_uring::squeue::Entry {
+    rustix_uring::opcode::Splice::new(
+        rustix_uring::types::Fd(client.pipe_rdr.as_raw_fd()),
+        -1,
+        rustix_uring::types::Fd(client.conn.as_raw_fd()),
+        -1,
+        u32::MAX,
+    )
+    .build()
+    .user_data(UserData::DrainPipe(client_id).into())
 }
 
 fn handle_completions(
