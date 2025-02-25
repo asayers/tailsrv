@@ -1,3 +1,7 @@
+## 0.9.3
+
+* Fix a bug where collisions between client IDs were theoretically possible.
+
 ## 0.9.2
 
 * Fix a severe bug where tailsrv would crashs when clients disconnect.
