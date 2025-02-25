@@ -348,6 +348,9 @@ fn listen_for_clients(listener: TcpListener) {
 
 fn init_client(mut conn: TcpStream) -> Result<()> {
     info!("Connected");
+    let peer_addr = conn.peer_addr()?;
+    let local_addr = conn.local_addr()?;
+
     // The first thing the client will do is send a header
     let initial_offset = read_header(&mut conn)?;
     let client = Client::new(conn, initial_offset)?;
@@ -357,7 +360,7 @@ fn init_client(mut conn: TcpStream) -> Result<()> {
         .last_key_value()
         .map_or(0, |kv| kv.0.checked_add(1).expect("Ran out of client IDs"));
     clients.insert(client_id, client);
-    info!(client_id, initial_offset, "Registered new client");
+    info!(client_id, initial_offset, %peer_addr, %local_addr, "Registered new client");
 
     // Wake the main thread to get the new client caught up
     rustix::io::write(&*EVENTFD, &1u64.to_ne_bytes()).unwrap();
