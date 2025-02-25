@@ -346,19 +346,31 @@ fn listen_for_clients(listener: TcpListener) {
                 }
             };
             let _g = info_span!("", client_id).entered();
-            match Client::new(conn) {
-                Ok(client) => {
-                    trace!("Prepared client: {client:?}");
-                    CLIENTS.lock().unwrap().insert(client_id, client);
-                    rustix::io::write(&*EVENTFD, &1u64.to_ne_bytes()).unwrap();
-                    trace!("Wrote to eventfd");
-                }
+            match init_client(conn) {
+                Ok(()) => (),
                 Err(e) => error!("{e}"),
             }
         });
     }
     error!("Listening socket was closed!");
     std::process::exit(1);
+}
+
+fn init_client(mut conn: TcpStream) -> Result<()> {
+    info!("Connected");
+    // The first thing the client will do is send a header
+    let offset = read_header(&mut conn)?;
+    info!("Starting from initial offset {offset}");
+
+    let client = Client::new(conn, offset)?;
+    trace!("Prepared client: {client:?}");
+
+    CLIENTS.lock().unwrap().insert(client_id, client);
+
+    // Wake the main thread to get the new client caught up
+    rustix::io::write(&*EVENTFD, &1u64.to_ne_bytes()).unwrap();
+    trace!("Wrote to eventfd");
+    Ok(())
 }
 
 // TODO: timeout
@@ -393,12 +405,7 @@ struct Client {
 }
 
 impl Client {
-    fn new(mut conn: TcpStream) -> Result<Client> {
-        info!("Connected");
-        // The first thing the client will do is send a header
-        let offset = read_header(&mut conn)?;
-        info!("Starting from initial offset {offset}");
-
+    fn new(conn: TcpStream, offset: usize) -> Result<Client> {
         let (pipe_rdr, pipe_wtr) = rustix::pipe::pipe()?;
         Ok(Client {
             conn,
