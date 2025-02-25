@@ -361,6 +361,27 @@ fn listen_for_clients(listener: TcpListener) {
     std::process::exit(1);
 }
 
+// TODO: timeout
+// TODO: length limit
+fn read_header(conn: &mut TcpStream) -> Result<usize> {
+    let mut buf = String::new();
+    std::io::BufReader::new(conn).read_line(&mut buf)?;
+
+    // Parse the header (it's just a signed int)
+    let header: isize = buf.as_str().trim().parse()?;
+
+    // Resolve the header to a byte offset
+    let offset = match usize::try_from(header) {
+        Ok(x) => x,
+        Err(_) => {
+            let cur_len = FILE_LENGTH.load(Ordering::Acquire);
+            cur_len.saturating_add_signed(header)
+        }
+    };
+
+    Ok(offset)
+}
+
 #[derive(Debug)]
 struct Client {
     conn: TcpStream,
@@ -375,22 +396,7 @@ impl Client {
     fn new(mut conn: TcpStream) -> Result<Client> {
         info!("Connected");
         // The first thing the client will do is send a header
-        // TODO: timeout
-        // TODO: length limit
-        let mut buf = String::new();
-        std::io::BufReader::new(&mut conn).read_line(&mut buf)?;
-
-        // Parse the header (it's just a signed int)
-        let header: isize = buf.as_str().trim().parse()?;
-
-        // Resolve the header to a byte offset
-        let offset = match usize::try_from(header) {
-            Ok(x) => x,
-            Err(_) => {
-                let cur_len = FILE_LENGTH.load(Ordering::Acquire);
-                cur_len.saturating_add_signed(header)
-            }
-        };
+        let offset = read_header(&mut conn)?;
         info!("Starting from initial offset {offset}");
 
         let (pipe_rdr, pipe_wtr) = rustix::pipe::pipe()?;
