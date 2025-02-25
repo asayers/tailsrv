@@ -335,18 +335,8 @@ fn wait_for_file(path: &Path) -> Result<File> {
 fn listen_for_clients(listener: TcpListener) {
     for conn in listener.incoming() {
         std::thread::spawn(move || {
-            let (conn, client_id) = match conn.and_then(|c| {
-                let port = c.peer_addr()?.port();
-                Ok((c, port))
-            }) {
-                Ok(x) => x,
-                Err(e) => {
-                    error!("Bad connection: {e}");
-                    continue;
-                }
-            };
-            let _g = info_span!("", client_id).entered();
-            match init_client(conn) {
+            let res = conn.map_err(|e| e.into()).and_then(init_client);
+            match res {
                 Ok(()) => (),
                 Err(e) => error!("{e}"),
             }
@@ -357,6 +347,9 @@ fn listen_for_clients(listener: TcpListener) {
 }
 
 fn init_client(mut conn: TcpStream) -> Result<()> {
+    let client_id = conn.peer_addr()?.port();
+    let _g = info_span!("", client_id).entered();
+
     info!("Connected");
     // The first thing the client will do is send a header
     let offset = read_header(&mut conn)?;
