@@ -116,9 +116,9 @@ fn main() -> Result<()> {
     let mut reqs = VecDeque::new();
     loop {
         issue_requests(&mut reqs, &mut uring, file_fd)?;
-        trace!("Waiting for wake-ups");
+        debug!("Going to sleep...");
         uring.submit_and_wait(1)?;
-        trace!("Woke up!");
+        debug!("Woke up!");
         handle_completions(&mut uring, &file, &ino_fd, opts.linger_after_file_is_gone)?;
     }
 }
@@ -133,10 +133,10 @@ fn issue_requests(
         if client.in_flight {
             // Nothing to do
         } else if client.bytes_in_pipe > 0 {
-            trace!("Payload only partially delivered. Retrying...");
+            debug!("Payload only partially delivered. Retrying...");
             reqs.push_back(drain_pipe(client_id, client));
         } else if client.offset < file_len {
-            trace!(
+            debug!(
                 client_id,
                 file_len,
                 offset = client.offset,
@@ -174,7 +174,7 @@ fn issue_requests(
     while let Some(req) = reqs.front() {
         let is_full = unsafe { uring.submission().push(req) }.is_err();
         if is_full {
-            trace!("Queue is full; submit and retry");
+            debug!("Queue is full; submit and retry");
             uring.submit()?;
         } else {
             trace!(">> {req:?}");
@@ -219,25 +219,27 @@ fn handle_completions(
     linger: bool,
 ) -> Result<()> {
     for cqe in uring.completion() {
+        trace!("<< {cqe:?}");
         let user_data = UserData::try_from(cqe.user_data())?;
         let result = cqe.result();
         let result = usize::try_from(result).map_err(|_| Errno::from_raw_os_error(-result));
-        trace!("io_uring completion: {:?}: {:?}", user_data, result);
+        trace!("parsed completion: {:?}, {:?}", user_data, result);
         match (user_data, result) {
             (UserData::NewClient, Ok(_)) => {
-                trace!("New client");
+                debug!("New client(s)");
                 assert!(cqe.flags().contains(rustix_uring::cqueue::Flags::MORE));
                 let mut buf = [0; 8];
                 match rustix::io::read(&*EVENTFD, &mut buf) {
                     Ok(8) | Err(Errno::AGAIN) => {
                         let x = u64::from_ne_bytes(buf);
-                        trace!("Received notification of {x} new clients");
+                        trace!("Number of new clients = {x}");
                     }
                     Ok(x) => error!("Incomplete read: {x}"),
                     Err(e) => error!("{e}"),
                 }
             }
             (UserData::Inotify, Ok(_)) => {
+                debug!("inotify events availble to be read");
                 assert!(cqe.flags().contains(rustix_uring::cqueue::Flags::MORE));
                 let mut buf = [const { MaybeUninit::uninit() }; 1024];
                 let mut evs = inotify::Reader::new(&ino_fd, &mut buf);
@@ -252,7 +254,7 @@ fn handle_completions(
             (UserData::NewClient | UserData::Inotify, Err(e)) => error!("{e}"),
             (UserData::FillPipe(client_id), Ok(n_copied)) => {
                 let _g = info_span!("", client_id).entered();
-                trace!("Filled pipe with {} bytes", n_copied);
+                debug!("Filled pipe with {} bytes", n_copied);
                 assert!(n_copied != 0);
                 let mut clients = CLIENTS.lock().unwrap();
                 let client = clients.get_mut(&client_id).unwrap();
@@ -260,7 +262,7 @@ fn handle_completions(
             }
             (UserData::DrainPipe(client_id), Ok(n_sent)) => {
                 let _g = info_span!("", client_id).entered();
-                trace!("Sent {} bytes to client", n_sent);
+                debug!("Sent {} bytes to client", n_sent);
                 let mut clients = CLIENTS.lock().unwrap();
                 let client = clients.get_mut(&client_id).unwrap();
                 client.bytes_in_pipe -= n_sent;
@@ -284,7 +286,9 @@ fn handle_file_event(ev: inotify::InotifyEvent, file: &File, linger: bool) -> Re
     trace!("inotify event: {:?}", ev);
     if ev.events().contains(inotify::ReadFlags::MOVE_SELF) {
         info!("File was moved");
-        if !linger {
+        if linger {
+            debug!("Lingering");
+        } else {
             std::process::exit(0);
         }
     }
@@ -295,14 +299,16 @@ fn handle_file_event(ev: inotify::InotifyEvent, file: &File, linger: bool) -> Re
         // when the user unlinks the file (and at other times too).
         if file.metadata()?.nlink() == 0 {
             info!("File was deleted");
-            if !linger {
+            if linger {
+                debug!("Lingering");
+            } else {
                 std::process::exit(0);
             }
         }
     }
     if ev.events().contains(inotify::ReadFlags::MODIFY) {
         let file_len = usize::try_from(file.metadata().unwrap().len())?;
-        trace!("New file size: {}", file_len);
+        debug!("New file size: {}", file_len);
         FILE_LENGTH.store(file_len, Ordering::Release);
     }
     Ok(())
@@ -347,7 +353,7 @@ fn listen_for_clients(listener: TcpListener) {
 }
 
 fn init_client(mut conn: TcpStream) -> Result<()> {
-    info!("Connected");
+    debug!("New connection established");
     let peer_addr = conn.peer_addr()?;
     let local_addr = conn.local_addr()?;
 
@@ -364,7 +370,7 @@ fn init_client(mut conn: TcpStream) -> Result<()> {
 
     // Wake the main thread to get the new client caught up
     rustix::io::write(&*EVENTFD, &1u64.to_ne_bytes()).unwrap();
-    trace!("Wrote to eventfd");
+    debug!("Signalled the main thread to wake up");
     Ok(())
 }
 
