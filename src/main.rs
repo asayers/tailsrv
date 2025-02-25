@@ -413,6 +413,9 @@ impl Client {
     }
 }
 
+/// A kind of cookie which you can attach to io_uring submissions, which allows
+/// you to match them up with their completions.  The io_uring API requires them
+/// to be encoded as a u64.
 #[derive(Debug)]
 enum UserData {
     NewClient,
@@ -420,10 +423,16 @@ enum UserData {
     FillPipe(u16),
     DrainPipe(u16),
 }
+// Why add 100k/200k, rather than a bitshift?  It's because this user data
+// appears in the logs, printed in decimal.  For example:
+//
+//     2025-02-25T02:22:05.204356Z TRACE tailsrv: >> Entry { ..., user_data: 100017 }
+//     2025-02-25T02:22:05.204362Z TRACE tailsrv: >> Entry { ..., user_data: 200017 }
+//
+// If you know the scheme, you can tell at a glance that these are fill and
+// drain events for client #17.
 const FILL_FROM: u64 = 100_000;
-const FILL_TO: u64 = FILL_FROM + u16::MAX as u64;
 const DRAIN_FROM: u64 = 200_000;
-const DRAIN_TO: u64 = DRAIN_FROM + u16::MAX as u64;
 impl From<UserData> for u64 {
     fn from(value: UserData) -> Self {
         match value {
@@ -437,6 +446,8 @@ impl From<UserData> for u64 {
 impl TryFrom<u64> for UserData {
     type Error = Box<dyn std::error::Error>;
     fn try_from(value: u64) -> Result<Self, Self::Error> {
+        const FILL_TO: u64 = FILL_FROM + u16::MAX as u64;
+        const DRAIN_TO: u64 = DRAIN_FROM + u16::MAX as u64;
         match value {
             0 => Ok(UserData::NewClient),
             1 => Ok(UserData::Inotify),
