@@ -334,17 +334,17 @@ fn wait_for_file(path: &Path) -> Result<File> {
 
 fn listen_for_clients(listener: TcpListener) {
     for conn in listener.incoming() {
-        let (conn, client_id) = match conn.and_then(|c| {
-            let port = c.peer_addr()?.port();
-            Ok((c, port))
-        }) {
-            Ok(x) => x,
-            Err(e) => {
-                error!("Bad connection: {e}");
-                continue;
-            }
-        };
         std::thread::spawn(move || {
+            let (conn, client_id) = match conn.and_then(|c| {
+                let port = c.peer_addr()?.port();
+                Ok((c, port))
+            }) {
+                Ok(x) => x,
+                Err(e) => {
+                    error!("Bad connection: {e}");
+                    continue;
+                }
+            };
             let _g = info_span!("", client_id).entered();
             match Client::new(conn) {
                 Ok(client) => {
