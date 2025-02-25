@@ -9,8 +9,8 @@ authors = ["Alex Sayers <alex.sayers@gmail.com>"]
 edition = "2024"
 
 [dependencies]
-bpaf = { version = "0.9.15", features = ["derive"] }
-rustix = { version = "0.38.42", features = ["fs", "mm", "pipe"] }
+bpaf = { version = "0.9.16", features = ["derive"] }
+rustix = { version = "0.38.44", features = ["fs", "mm", "pipe"] }
 rustix-uring = "0.2.0"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
