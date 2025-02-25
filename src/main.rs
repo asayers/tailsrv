@@ -347,18 +347,17 @@ fn listen_for_clients(listener: TcpListener) {
 }
 
 fn init_client(mut conn: TcpStream) -> Result<()> {
-    let client_id = conn.peer_addr()?.port();
-    let _g = info_span!("", client_id).entered();
-
     info!("Connected");
     // The first thing the client will do is send a header
-    let offset = read_header(&mut conn)?;
-    info!("Starting from initial offset {offset}");
+    let initial_offset = read_header(&mut conn)?;
+    let client = Client::new(conn, initial_offset)?;
 
-    let client = Client::new(conn, offset)?;
-    trace!("Prepared client: {client:?}");
-
-    CLIENTS.lock().unwrap().insert(client_id, client);
+    let mut clients = CLIENTS.lock().unwrap();
+    let client_id = clients
+        .last_key_value()
+        .map_or(0, |kv| kv.0.checked_add(1).expect("Ran out of client IDs"));
+    clients.insert(client_id, client);
+    info!(client_id, initial_offset, "Registered new client");
 
     // Wake the main thread to get the new client caught up
     rustix::io::write(&*EVENTFD, &1u64.to_ne_bytes()).unwrap();
@@ -427,8 +426,8 @@ impl From<UserData> for u64 {
         match value {
             UserData::NewClient => 0,
             UserData::Inotify => 1,
-            UserData::FillPipe(port) => u64::from(port) + FILL_FROM,
-            UserData::DrainPipe(port) => u64::from(port) + DRAIN_FROM,
+            UserData::FillPipe(id) => u64::from(id) + FILL_FROM,
+            UserData::DrainPipe(id) => u64::from(id) + DRAIN_FROM,
         }
     }
 }
