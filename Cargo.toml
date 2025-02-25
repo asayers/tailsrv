@@ -6,7 +6,7 @@ readme = "README.md"
 repository = "https://github.com/asayers/tailsrv"
 license = "Unlicense"
 authors = ["Alex Sayers <alex.sayers@gmail.com>"]
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 bpaf = { version = "0.9.15", features = ["derive"] }
